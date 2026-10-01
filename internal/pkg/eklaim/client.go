@@ -235,7 +235,7 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 	diagnosaStr := strings.Join(param.Diagnosa, "#")
 	diagnosaSetReq := map[string]any{
 		"metadata": map[string]string{
-			"method":    "inacbg_diagnosa_set",
+			"method":    "idrg_diagnosa_set",
 			"nomor_sep": param.NomorSEP,
 		},
 		"data": map[string]string{
@@ -256,7 +256,7 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 		prosedurStr := strings.Join(param.Prosedur, "#")
 		procedureSetReq := map[string]any{
 			"metadata": map[string]string{
-				"method":    "inacbg_procedure_set",
+				"method":    "idrg_procedure_set",
 				"nomor_sep": param.NomorSEP,
 			},
 			"data": map[string]string{
@@ -278,7 +278,7 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 		"metadata": map[string]string{
 			"method":  "grouper",
 			"stage":   "1",
-			"grouper": "inacbg",
+			"grouper": "idrg",
 		},
 		"data": map[string]string{
 			"nomor_sep": param.NomorSEP,
@@ -342,6 +342,17 @@ type wsResponse struct {
 			Type        string `json:"type"`
 		} `json:"special_cmg"`
 	} `json:"response_inacbg"`
+	ResponseIDRG struct {
+		DRGCode        string `json:"drg_code"`
+		DRGDescription string `json:"drg_description"`
+		MDCNumber      string `json:"mdc_number"`
+		MDCDescription string `json:"mdc_description"`
+		CostWeight     string `json:"cost_weight"`
+		TotalTarif     string `json:"total_tarif"`
+		StatusCd       string `json:"status_cd"`
+		ScriptVersion  string `json:"script_version"`
+		LogicVersion   string `json:"logic_version"`
+	} `json:"response_idrg"`
 }
 
 func (c *client) sendRequest(ctx context.Context, payload any) (*wsResponse, error) {
@@ -401,6 +412,13 @@ func (c *client) parseGrouperResult(resp *wsResponse, jenisRawat string) (*Hasil
 	kelas := resp.ResponseINACBG.Kelas
 	specialCMGSource := resp.ResponseINACBG.SpecialCMG
 
+	if cbgCode == "" && resp.ResponseIDRG.DRGCode != "" {
+		cbgCode = resp.ResponseIDRG.DRGCode
+		cbgDesc = resp.ResponseIDRG.DRGDescription
+		tarif = parseTariffValue(resp.ResponseIDRG.TotalTarif)
+		baseTarif = tarif
+	}
+
 	if cbgCode == "" && resp.Response.CBG.Code != "" {
 		cbgCode = resp.Response.CBG.Code
 		cbgDesc = resp.Response.CBG.Description
@@ -411,7 +429,7 @@ func (c *client) parseGrouperResult(resp *wsResponse, jenisRawat string) (*Hasil
 	}
 
 	if cbgCode == "" {
-		return nil, errors.New("hasil grouper E-Klaim tidak menghasilkan kode CBG")
+		return nil, errors.New("hasil grouper E-Klaim tidak menghasilkan kode CBG/DRG")
 	}
 
 	if baseTarif == 0 {
