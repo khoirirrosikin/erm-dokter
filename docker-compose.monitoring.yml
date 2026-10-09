@@ -29,6 +29,9 @@ services:
             - GF_SECURITY_ADMIN_USER=admin
             - GF_SECURITY_ADMIN_PASSWORD=admin
             - GF_USERS_ALLOW_SIGN_UP=false
+            - GF_ANALYTICS_REPORTING_ENABLED=false
+            - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+            - GF_NEWS_NEWS_FEED_ENABLED=false
             - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/erm_dokter_dashboard.json
         volumes:
             - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
