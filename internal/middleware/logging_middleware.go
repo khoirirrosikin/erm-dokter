@@ -101,12 +101,7 @@ func LoggingMiddlewareWithLogger(log *logger.Logger) func(http.Handler) http.Han
 			duration := time.Since(start)
 			durationMs := float64(duration.Microseconds()) / 1000.0
 
-			clientIP := r.RemoteAddr
-			if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-				clientIP = strings.TrimSpace(strings.Split(forwarded, ",")[0])
-			} else if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-				clientIP = strings.TrimSpace(realIP)
-			}
+			clientIP := GetClientIP(r)
 
 			requestID := logger.GetRequestID(r.Context())
 			if requestID == "" {

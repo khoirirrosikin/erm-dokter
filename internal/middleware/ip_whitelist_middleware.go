@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -33,15 +34,20 @@ func IPWhitelistMiddleware(allowedIPs []string) func(http.Handler) http.Handler 
 				return
 			}
 
-			clientAddr, err := netip.ParseAddr(GetClientIP(r))
+			remoteHost := strings.TrimSpace(r.RemoteAddr)
+			if host, _, err := net.SplitHostPort(remoteHost); err == nil && host != "" {
+				remoteHost = host
+			}
+
+			remoteAddr, err := netip.ParseAddr(remoteHost)
 			if err != nil {
 				response.Error(w, http.StatusForbidden, "Akses ditolak: IP Anda tidak memiliki izin untuk mengakses layanan ini", nil)
 				return
 			}
 
-			clientAddr = clientAddr.Unmap()
+			remoteAddr = remoteAddr.Unmap()
 			for _, prefix := range prefixes {
-				if prefix.Contains(clientAddr) {
+				if prefix.Contains(remoteAddr) {
 					next.ServeHTTP(w, r)
 					return
 				}
