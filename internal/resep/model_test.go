@@ -68,10 +68,11 @@ func TestSimpanResepRequest_Sanitize(t *testing.T) {
 }
 
 func TestSimpanResepRequest_Validate_ValidNonRacikan(t *testing.T) {
+	pastTime := time.Now().Add(-5 * time.Minute)
 	req := resep.SimpanResepRequest{
 		NoRawat:          "2026/08/28/000001",
-		TanggalPeresepan: time.Now().Format("2006-01-02"),
-		JamPeresepan:     "08:00:00",
+		TanggalPeresepan: pastTime.Format("2006-01-02"),
+		JamPeresepan:     pastTime.Format("15:04:05"),
 		ResepDokter: []resep.ResepDokterInput{
 			{
 				ItemObatInput: resep.ItemObatInput{
@@ -90,10 +91,11 @@ func TestSimpanResepRequest_Validate_ValidNonRacikan(t *testing.T) {
 }
 
 func TestSimpanResepRequest_Validate_ValidRacikan(t *testing.T) {
+	pastTime := time.Now().Add(-5 * time.Minute)
 	req := resep.SimpanResepRequest{
 		NoRawat:          "2026/08/28/000001",
-		TanggalPeresepan: time.Now().Format("2006-01-02"),
-		JamPeresepan:     "08:00:00",
+		TanggalPeresepan: pastTime.Format("2006-01-02"),
+		JamPeresepan:     pastTime.Format("15:04:05"),
 		ResepRacikan: []resep.ResepRacikanInput{
 			{
 				NamaRacik:     "Puyer Batuk",

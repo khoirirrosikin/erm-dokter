@@ -103,7 +103,7 @@ func TestSimpanPemeriksaanRequest_ValidationAndSanitization(t *testing.T) {
 		req := pemeriksaan.SimpanPemeriksaanRequest{
 			NoRawat: "2026/09/03/000001",
 			DataPemeriksaan: pemeriksaan.DataPemeriksaan{
-				TanggalPemeriksaan:  nowDate,
+				TanggalPemeriksaan:  "2026-09-03",
 				JamPemeriksaan:      "08:30",
 				Kesadaran:           pemeriksaan.KesadaranComposMentis,
 				Keluhan:             "Keluhan",

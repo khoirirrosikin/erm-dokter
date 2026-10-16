@@ -1095,7 +1095,7 @@ func TestService_PermintaanLabPA(t *testing.T) {
 	mockRawatJalan := &mockRawatJalanService{
 		getWaktuRegistrasiFn: func(ctx context.Context, noRawat string) (string, string, bool, error) {
 			if noRawat == "2026/09/04/000001" {
-				return nowDate, "07:00:00", true, nil
+				return nowDate, "00:00:01", true, nil
 			}
 			return "", "", false, nil
 		},
@@ -1315,7 +1315,7 @@ func TestService_PermintaanLabMB(t *testing.T) {
 	mockRawatJalan := &mockRawatJalanService{
 		getWaktuRegistrasiFn: func(ctx context.Context, noRawat string) (string, string, bool, error) {
 			if noRawat == "2026/09/04/000001" {
-				return nowDate, "07:00:00", true, nil
+				return nowDate, "00:00:01", true, nil
 			}
 			return "", "", false, nil
 		},
