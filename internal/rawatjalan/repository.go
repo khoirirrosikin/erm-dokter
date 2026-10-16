@@ -17,6 +17,7 @@ type Repository interface {
 	RiwayatKunjunganPasien(ctx context.Context, noRM string) ([]KunjunganRawatJalan, error)
 	GetWaktuRegistrasi(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	GetInfoRegistrasi(ctx context.Context, noRawat string) (*InfoRegistrasiPasien, error)
+	GetKodePoliByNoRawat(ctx context.Context, noRawat string, kodeDokter string) (string, error)
 }
 
 type repository struct {
@@ -668,3 +669,24 @@ func (r *repository) GetInfoRegistrasi(ctx context.Context, noRawat string) (*In
 	}
 	return &info, nil
 }
+
+func (r *repository) GetKodePoliByNoRawat(ctx context.Context, noRawat string, kodeDokter string) (string, error) {
+	if strings.TrimSpace(kodeDokter) != "" {
+		var kdPoliRujukan string
+		err := r.db.QueryRowContext(ctx, "SELECT kd_poli FROM rujukan_internal_poli WHERE no_rawat = ? AND kd_dokter = ? LIMIT 1", noRawat, kodeDokter).Scan(&kdPoliRujukan)
+		if err == nil && strings.TrimSpace(kdPoliRujukan) != "" {
+			return strings.TrimSpace(kdPoliRujukan), nil
+		}
+	}
+
+	var kdPoli string
+	err := r.db.QueryRowContext(ctx, "SELECT kd_poli FROM reg_periksa WHERE no_rawat = ? LIMIT 1", noRawat).Scan(&kdPoli)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("gagal query kode poli: %w", err)
+	}
+	return strings.TrimSpace(kdPoli), nil
+}
+

@@ -41,6 +41,7 @@ type Config struct {
 	EKLAIMKodeRS                string
 	EKLAIMKodeTarif             string
 	EKLAIMDefaultCoderNIK       string
+	URLAntreanPoli              string
 }
 
 func Load() *Config {
@@ -114,6 +115,7 @@ func Load() *Config {
 		EKLAIMKodeRS:                strings.TrimSpace(os.Getenv("EKLAIM_KODE_RS")),
 		EKLAIMKodeTarif:             getEnvOrDefault("EKLAIM_KODE_TARIF", "BP"),
 		EKLAIMDefaultCoderNIK:       getEnvOrDefault("EKLAIM_NIK_CODER", "1234567890123456"),
+		URLAntreanPoli:              strings.TrimSpace(os.Getenv("URL_ANTREAN_POLI")),
 	}
 	return cfg
 }

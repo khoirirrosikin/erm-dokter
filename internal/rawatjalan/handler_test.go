@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"erm-dokter/internal/middleware"
@@ -22,6 +23,7 @@ type mockRawatJalanService struct {
 	riwayatKunjunganPasienFn func(ctx context.Context, noRM string) ([]rawatjalan.KunjunganRawatJalan, error)
 	getWaktuRegistrasiFn     func(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	getInfoRegistrasiFn      func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error)
+	panggilAntreanFn         func(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*rawatjalan.HasilPanggilAntrean, error)
 }
 
 func (m *mockRawatJalanService) DaftarAntreanDokter(ctx context.Context, kodeDokter string, filter rawatjalan.FilterAntreanDokter) ([]rawatjalan.KunjunganRawatJalan, shared.PaginationMeta, error) {
@@ -63,6 +65,17 @@ func (m *mockRawatJalanService) GetInfoRegistrasi(ctx context.Context, noRawat s
 		StatusBayar:       "Belum Bayar",
 	}, nil
 }
+
+func (m *mockRawatJalanService) PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*rawatjalan.HasilPanggilAntrean, error) {
+	if m.panggilAntreanFn != nil {
+		return m.panggilAntreanFn(ctx, noRawat, kdPoli, kodeDokter)
+	}
+	return &rawatjalan.HasilPanggilAntrean{
+		NoRawat:  noRawat,
+		KodePoli: kdPoli,
+	}, nil
+}
+
 
 func (m *mockRawatJalanService) DaftarStatusPemeriksaan(ctx context.Context) []rawatjalan.OpsiReferensi {
 	return []rawatjalan.OpsiReferensi{{Value: "Belum", Label: "Belum Diperiksa"}}
@@ -246,3 +259,62 @@ func TestRawatJalanHandler_ServiceRole(t *testing.T) {
 		}
 	})
 }
+
+func TestRawatJalanHandler_PanggilAntrean(t *testing.T) {
+	noOpMw := func(next http.HandlerFunc) http.HandlerFunc { return next }
+
+	t.Run("Sukses panggil via path id_kunjungan", func(t *testing.T) {
+		encKunjungan, _ := crypto.Encrypt("2026/09/03/000001", testEncKey)
+		mockSvc := &mockRawatJalanService{
+			panggilAntreanFn: func(ctx context.Context, noRawat, kdPoli, kodeDokter string) (*rawatjalan.HasilPanggilAntrean, error) {
+				if noRawat != "2026/09/03/000001" {
+					t.Errorf("expected no_rawat '2026/09/03/000001', got %s", noRawat)
+				}
+				if kdPoli != "U0001" {
+					t.Errorf("expected kd_poli 'U0001', got %s", kdPoli)
+				}
+				return &rawatjalan.HasilPanggilAntrean{
+					NoRawat:  noRawat,
+					KodePoli: "U0001",
+				}, nil
+			},
+		}
+
+		handler := rawatjalan.NewHandler(mockSvc, testEncKey)
+		mux := http.NewServeMux()
+		handler.RegisterRoutes(mux, authMwForTest, authMwForTest, noOpMw)
+
+		body := `{"kd_poli":"U0001"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rawat-jalan/"+encKunjungan+"/panggil", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d. Body: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp map[string]interface{}
+		_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+		if resp["success"] != true {
+			t.Errorf("Expected success true, got %v", resp["success"])
+		}
+	})
+
+	t.Run("Error ID kunjungan tidak valid", func(t *testing.T) {
+		mockSvc := &mockRawatJalanService{}
+		handler := rawatjalan.NewHandler(mockSvc, testEncKey)
+		mux := http.NewServeMux()
+		handler.RegisterRoutes(mux, authMwForTest, authMwForTest, noOpMw)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rawat-jalan/invalid-encrypted-id/panggil", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("Expected status 400 for invalid ID, got %d", rr.Code)
+		}
+	})
+}
+
+

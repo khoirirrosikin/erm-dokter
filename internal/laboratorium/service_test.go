@@ -270,6 +270,7 @@ func (m *mockBerkasService) BuildFullURL(lokasiFile string) string {
 }
 
 type mockRawatJalanService struct {
+	rawatjalan.Service
 	getWaktuRegistrasiFn func(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	getInfoRegistrasiFn  func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error)
 }

@@ -111,3 +111,15 @@ func TestConfigLoad_EKLAIM(t *testing.T) {
 		t.Errorf("Expected EKLAIMDefaultCoderNIK match, got '%s'", cfg.EKLAIMDefaultCoderNIK)
 	}
 }
+
+func TestConfigLoad_URLAntreanPoli(t *testing.T) {
+	testURL := "http://antrean.example.com/antrianpoli/api.php?action=tambah"
+	os.Setenv("URL_ANTREAN_POLI", testURL)
+	defer os.Unsetenv("URL_ANTREAN_POLI")
+
+	cfg := config.Load()
+	if cfg.URLAntreanPoli != testURL {
+		t.Errorf("Expected URLAntreanPoli '%s', got '%s'", testURL, cfg.URLAntreanPoli)
+	}
+}
+

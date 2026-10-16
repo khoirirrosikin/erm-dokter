@@ -2,6 +2,10 @@ package rawatjalan_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"erm-dokter/internal/pkg/logger"
@@ -13,6 +17,7 @@ type mockRepository struct {
 	detailKunjunganFunc        func(ctx context.Context, noRawat string, kodeDokter string) (*rawatjalan.KunjunganRawatJalan, error)
 	riwayatKunjunganPasienFunc func(ctx context.Context, noRM string) ([]rawatjalan.KunjunganRawatJalan, error)
 	getInfoRegistrasiFunc      func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error)
+	getKodePoliByNoRawatFunc   func(ctx context.Context, noRawat string, kodeDokter string) (string, error)
 }
 
 func (m *mockRepository) DaftarAntreanDokter(ctx context.Context, kodeDokter string, filter rawatjalan.FilterAntreanDokter) ([]rawatjalan.KunjunganRawatJalan, int, error) {
@@ -51,6 +56,14 @@ func (m *mockRepository) GetInfoRegistrasi(ctx context.Context, noRawat string) 
 		StatusBayar:       "Belum Bayar",
 	}, nil
 }
+
+func (m *mockRepository) GetKodePoliByNoRawat(ctx context.Context, noRawat string, kodeDokter string) (string, error) {
+	if m.getKodePoliByNoRawatFunc != nil {
+		return m.getKodePoliByNoRawatFunc(ctx, noRawat, kodeDokter)
+	}
+	return "U0001", nil
+}
+
 
 func TestDaftarAntreanDokter_ValidationError(t *testing.T) {
 	filter := rawatjalan.FilterAntreanDokter{
@@ -314,3 +327,128 @@ func TestGetInfoRegistrasi(t *testing.T) {
 		}
 	})
 }
+
+func TestPanggilAntrean(t *testing.T) {
+	log := logger.New()
+	ctx := context.Background()
+
+	t.Run("Validasi No Rawat Kosong", func(t *testing.T) {
+		repo := &mockRepository{}
+		svc := rawatjalan.NewService(repo, log, "http://example.com/api.php")
+
+		_, err := svc.PanggilAntrean(ctx, "", "U0001", "D001")
+		if err == nil {
+			t.Fatal("diharapkan error ketika no_rawat kosong")
+		}
+		if !strings.Contains(err.Error(), "Nomor rawat wajib diisi") {
+			t.Errorf("pesan error tidak sesuai: %v", err)
+		}
+	})
+
+	t.Run("Validasi URL Display Kosong", func(t *testing.T) {
+		repo := &mockRepository{}
+		svc := rawatjalan.NewService(repo, log, "")
+
+		_, err := svc.PanggilAntrean(ctx, "2026/09/04/000001", "U0001", "D001")
+		if err == nil {
+			t.Fatal("diharapkan error ketika URL display kosong")
+		}
+		if !strings.Contains(err.Error(), "URL display antrean poli belum dikonfigurasi") {
+			t.Errorf("pesan error tidak sesuai: %v", err)
+		}
+	})
+
+	t.Run("Gagal Mengambil Kode Poli dari DB", func(t *testing.T) {
+		repo := &mockRepository{
+			getKodePoliByNoRawatFunc: func(ctx context.Context, noRawat string, kodeDokter string) (string, error) {
+				return "", nil
+			},
+		}
+		svc := rawatjalan.NewService(repo, log, "http://example.com/api.php")
+
+		_, err := svc.PanggilAntrean(ctx, "2026/09/04/000001", "", "D001")
+		if err == nil {
+			t.Fatal("diharapkan error ketika kd_poli tidak ditemukan di DB")
+		}
+		if !strings.Contains(err.Error(), "Kode poli tidak ditemukan") {
+			t.Errorf("pesan error tidak sesuai: %v", err)
+		}
+	})
+
+	t.Run("Sukses Panggil Antrean ke Mock Server", func(t *testing.T) {
+		var receivedMethod, receivedContentType, receivedAction, receivedNoRawat, receivedKdPoli string
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedMethod = r.Method
+			receivedContentType = r.Header.Get("Content-Type")
+			receivedAction = r.URL.Query().Get("action")
+
+			body, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+
+			parts := strings.Split(string(body), "&")
+			for _, part := range parts {
+				kv := strings.SplitN(part, "=", 2)
+				if len(kv) == 2 {
+					switch kv[0] {
+					case "no_rawat":
+						receivedNoRawat = kv[1]
+					case "kd_poli":
+						receivedKdPoli = kv[1]
+					}
+				}
+			}
+
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"success"}`))
+		}))
+		defer server.Close()
+
+		repo := &mockRepository{}
+		svc := rawatjalan.NewService(repo, log, server.URL+"/api.php?action=tambah")
+
+		hasil, err := svc.PanggilAntrean(ctx, "2026/09/04/000001", "U0001", "D001")
+		if err != nil {
+			t.Fatalf("tidak diharapkan error: %v", err)
+		}
+
+		if hasil.NoRawat != "2026/09/04/000001" || hasil.KodePoli != "U0001" {
+			t.Errorf("hasil panggil tidak sesuai: %+v", hasil)
+		}
+		if receivedMethod != http.MethodPost {
+			t.Errorf("expected POST method, got %s", receivedMethod)
+		}
+		if !strings.Contains(receivedContentType, "application/x-www-form-urlencoded") {
+			t.Errorf("expected Content-Type application/x-www-form-urlencoded, got %s", receivedContentType)
+		}
+		if receivedAction != "tambah" {
+			t.Errorf("expected action query param 'tambah', got %s", receivedAction)
+		}
+		if receivedNoRawat != "2026%2F09%2F04%2F000001" {
+			t.Errorf("expected url-encoded no_rawat, got %s", receivedNoRawat)
+		}
+		if receivedKdPoli != "U0001" {
+			t.Errorf("expected kd_poli U0001, got %s", receivedKdPoli)
+		}
+	})
+
+	t.Run("Server Display Error 500", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("Internal Server Error"))
+		}))
+		defer server.Close()
+
+		repo := &mockRepository{}
+		svc := rawatjalan.NewService(repo, log, server.URL+"/api.php?action=tambah")
+
+		_, err := svc.PanggilAntrean(ctx, "2026/09/04/000001", "U0001", "D001")
+		if err == nil {
+			t.Fatal("diharapkan error ketika server display merespon status 500")
+		}
+		if !strings.Contains(err.Error(), "status error 500") {
+			t.Errorf("pesan error tidak sesuai: %v", err)
+		}
+	})
+}
+

@@ -53,7 +53,7 @@ func TestClient_SimulasiGrouper_Success(t *testing.T) {
 					"message": "Ok",
 				},
 			}
-		case "inacbg_diagnosa_set", "inacbg_procedure_set":
+		case "inacbg_diagnosa_set", "inacbg_procedure_set", "idrg_diagnosa_set", "idrg_procedure_set":
 			respMap = map[string]any{
 				"metadata": map[string]any{
 					"code":    200,

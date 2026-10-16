@@ -139,3 +139,13 @@ func (f FilterAntreanDokter) Validate() apperror.ValidationError {
 	}
 	return nil
 }
+
+type PanggilAntreanRequest struct {
+	KodePoli string `json:"kd_poli,omitempty"`
+}
+
+type HasilPanggilAntrean struct {
+	NoRawat  string `json:"no_rawat"`
+	KodePoli string `json:"kd_poli"`
+}
+

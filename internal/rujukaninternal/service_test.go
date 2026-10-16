@@ -53,6 +53,7 @@ func (m *mockRepository) HapusRujukanInternal(ctx context.Context, noRawat, kdDo
 }
 
 type mockRawatJalanService struct {
+	rawatjalan.Service
 	tglReg, jamReg string
 	exists         bool
 	err            error
@@ -105,6 +106,9 @@ func (m *mockRawatJalanService) DaftarStatusBayar(ctx context.Context) []rawatja
 }
 func (m *mockRawatJalanService) DaftarJenisAntrean(ctx context.Context) []rawatjalan.OpsiReferensi {
 	return nil
+}
+func (m *mockRawatJalanService) PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*rawatjalan.HasilPanggilAntrean, error) {
+	return nil, nil
 }
 
 func TestDaftarOpsiPoliDokter_Success(t *testing.T) {

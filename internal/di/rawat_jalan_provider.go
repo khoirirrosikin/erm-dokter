@@ -10,6 +10,6 @@ import (
 
 func provideRawatJalan(db *sql.DB, cfg *config.Config, log *logger.Logger) *rawatjalan.Handler {
 	repo := rawatjalan.NewRepository(db)
-	svc := rawatjalan.NewService(repo, log)
+	svc := rawatjalan.NewService(repo, log, cfg.URLAntreanPoli)
 	return rawatjalan.NewHandler(svc, cfg.EncryptionKey)
 }

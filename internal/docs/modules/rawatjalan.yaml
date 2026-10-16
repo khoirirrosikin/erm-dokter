@@ -235,6 +235,52 @@ paths:
                                         example: Berhasil mengambil detail kunjungan pasien
                                     data:
                                         $ref: "#/components/schemas/KunjunganRawatJalan"
+    /api/v1/rawat-jalan/{id_kunjungan}/panggil:
+        post:
+            tags: [Rawat Jalan]
+            summary: Panggil Antrean Pasien ke Display
+            description: Mengirim instruksi panggilan pasien ke server display antrean poli berdasarkan encrypted ID kunjungan.
+            security:
+                - BearerAuth: []
+                - ApiKeyAuth: []
+            parameters:
+                - name: id_kunjungan
+                  in: path
+                  required: true
+                  description: Encrypted ID Kunjungan
+                  schema:
+                      type: string
+            requestBody:
+                required: false
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                kd_poli:
+                                    type: string
+                                    description: Kode poli tujuan (opsional, jika tidak diisi akan diambil otomatis dari kunjungan)
+                                    example: "U0001"
+            responses:
+                "200":
+                    description: Berhasil memanggil antrean pasien ke display
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    success:
+                                        type: boolean
+                                        example: true
+                                    message:
+                                        type: string
+                                        example: Berhasil memanggil antrean pasien ke display
+                                    data:
+                                        $ref: "#/components/schemas/HasilPanggilAntrean"
+                "400":
+                    description: ID kunjungan atau data tidak valid
+                "401":
+                    description: Tidak terautentikasi
 components:
     schemas:
         KunjunganRawatJalan:
@@ -354,3 +400,20 @@ components:
                     type: array
                     items:
                         $ref: "#/components/schemas/OpsiReferensi"
+        PanggilAntreanRequest:
+            type: object
+            properties:
+                kd_poli:
+                    type: string
+                    description: Kode poli tujuan (opsional, jika tidak diisi akan diambil otomatis dari kunjungan)
+                    example: "U0001"
+        HasilPanggilAntrean:
+            type: object
+            properties:
+                no_rawat:
+                    type: string
+                    example: "2026/09/03/000001"
+                kd_poli:
+                    type: string
+                    example: "U0001"
+

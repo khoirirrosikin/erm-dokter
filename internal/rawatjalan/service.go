@@ -2,6 +2,11 @@ package rawatjalan
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/shared"
@@ -14,6 +19,7 @@ type Service interface {
 	RiwayatKunjunganPasien(ctx context.Context, noRM string) ([]KunjunganRawatJalan, error)
 	GetWaktuRegistrasi(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	GetInfoRegistrasi(ctx context.Context, noRawat string) (*InfoRegistrasiPasien, error)
+	PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*HasilPanggilAntrean, error)
 
 	DaftarStatusPemeriksaan(ctx context.Context) []OpsiReferensi
 	DaftarStatusLanjut(ctx context.Context) []OpsiReferensi
@@ -22,14 +28,24 @@ type Service interface {
 }
 
 type service struct {
-	repo Repository
-	log  *logger.Logger
+	repo           Repository
+	log            *logger.Logger
+	urlAntreanPoli string
+	httpClient     *http.Client
 }
 
-func NewService(repo Repository, log *logger.Logger) Service {
+func NewService(repo Repository, log *logger.Logger, urlAntreanPoli ...string) Service {
+	var antreanURL string
+	if len(urlAntreanPoli) > 0 {
+		antreanURL = strings.TrimSpace(urlAntreanPoli[0])
+	}
 	return &service{
-		repo: repo,
-		log:  log,
+		repo:           repo,
+		log:            log,
+		urlAntreanPoli: antreanURL,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
 }
 
@@ -135,3 +151,62 @@ func (s *service) DaftarJenisAntrean(ctx context.Context) []OpsiReferensi {
 	}
 	return opsi
 }
+
+func (s *service) PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*HasilPanggilAntrean, error) {
+	noRawat = strings.TrimSpace(noRawat)
+	if noRawat == "" {
+		return nil, apperror.NewBusinessError("Nomor rawat wajib diisi")
+	}
+
+	kdPoli = strings.TrimSpace(kdPoli)
+	if kdPoli == "" {
+		var err error
+		kdPoli, err = s.repo.GetKodePoliByNoRawat(ctx, noRawat, kodeDokter)
+		if err != nil {
+			s.log.Error("Gagal mengambil kode poli untuk no_rawat %s: %v", noRawat, err)
+			return nil, err
+		}
+	}
+
+	if kdPoli == "" {
+		return nil, apperror.NewNotFoundError("Kode poli tidak ditemukan untuk nomor rawat ini")
+	}
+
+	targetURL := strings.TrimSpace(s.urlAntreanPoli)
+	if targetURL == "" {
+		s.log.Error("URL display antrean belum disetel di environment variable URL_ANTREAN_POLI")
+		return nil, apperror.NewBusinessError("URL display antrean poli belum dikonfigurasi pada sistem")
+	}
+
+	formData := url.Values{}
+	formData.Set("no_rawat", noRawat)
+	formData.Set("kd_poli", kdPoli)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(formData.Encode()))
+	if err != nil {
+		s.log.Error("Gagal membuat HTTP request antrean: %v", err)
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.log.Error("Gagal mengirim request panggil antrean ke display (%s): %v", targetURL, err)
+		return nil, apperror.NewBusinessError("Gagal menghubungi server display antrean", err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		s.log.Error("Display antrean merespon error status %d", resp.StatusCode)
+		return nil, apperror.NewBusinessError(fmt.Sprintf("Server display antrean merespon status error %d", resp.StatusCode))
+	}
+
+	s.log.Info("Berhasil panggil antrean display untuk no_rawat: %s, kd_poli: %s", noRawat, kdPoli)
+
+	return &HasilPanggilAntrean{
+		NoRawat:  noRawat,
+		KodePoli: kdPoli,
+	}, nil
+}
+

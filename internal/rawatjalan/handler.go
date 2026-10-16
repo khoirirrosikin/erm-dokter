@@ -1,8 +1,10 @@
 package rawatjalan
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"erm-dokter/internal/middleware"
 	"erm-dokter/internal/pkg/crypto"
@@ -36,6 +38,7 @@ func (h *Handler) RegisterRoutes(
 
 	mux.HandleFunc("GET /api/v1/rawat-jalan/antrean", serviceAuthMiddleware(timeoutMiddleware(h.DaftarAntreanDokter)))
 	mux.HandleFunc("GET /api/v1/rawat-jalan/{id_kunjungan}", authMiddleware(timeoutMiddleware(h.DetailKunjungan)))
+	mux.HandleFunc("POST /api/v1/rawat-jalan/{id_kunjungan}/panggil", serviceAuthMiddleware(timeoutMiddleware(h.PanggilAntrean)))
 }
 
 func (h *Handler) DaftarAntreanDokter(w http.ResponseWriter, r *http.Request) {
@@ -146,3 +149,37 @@ func (h *Handler) DaftarJenisAntrean(w http.ResponseWriter, r *http.Request) {
 	data := h.rawatJalanService.DaftarJenisAntrean(r.Context())
 	response.Success(w, "Berhasil mengambil referensi jenis antrean", data)
 }
+
+func (h *Handler) PanggilAntrean(w http.ResponseWriter, r *http.Request) {
+	idKunjungan := strings.TrimSpace(r.PathValue("id_kunjungan"))
+	if idKunjungan == "" {
+		apperror.HandleError(w, apperror.NewBusinessError("ID kunjungan wajib diisi"))
+		return
+	}
+
+	noRawat, err := crypto.Decrypt(idKunjungan, h.encryptionKey)
+	if err != nil {
+		apperror.HandleError(w, apperror.NewBusinessError("ID kunjungan tidak valid"))
+		return
+	}
+
+	var req PanggilAntreanRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	kodeDokter, err := middleware.GetKodeDokter(r.Context(), true)
+	if err != nil {
+		apperror.HandleError(w, err)
+		return
+	}
+
+	hasil, err := h.rawatJalanService.PanggilAntrean(r.Context(), noRawat, req.KodePoli, kodeDokter)
+	if err != nil {
+		apperror.HandleError(w, err)
+		return
+	}
+
+	response.Success(w, "Berhasil memanggil antrean pasien ke display", hasil)
+}
+

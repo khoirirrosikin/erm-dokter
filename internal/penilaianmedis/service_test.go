@@ -218,6 +218,7 @@ func (m *mockRepository) HapusPenilaianMedisRanapKandungan(ctx context.Context, 
 }
 
 type mockRawatJalanService struct {
+	rawatjalan.Service
 	tglReg, jamReg string
 	exists         bool
 	err            error
