@@ -123,3 +123,58 @@ func TestConfigLoad_URLAntreanPoli(t *testing.T) {
 	}
 }
 
+func TestConfigLoad_AllowedIPs_NoFallback(t *testing.T) {
+	// Development with no ALLOWED_IPS: must be empty slice (no fallback)
+	os.Setenv("APP_ENV", "development")
+	os.Unsetenv("ALLOWED_IPS")
+
+	cfg := config.Load()
+	if cfg.IsProduction() {
+		t.Errorf("Expected IsProduction false for development")
+	}
+	if len(cfg.AllowedIPs) != 0 {
+		t.Errorf("Expected AllowedIPs to be empty when not set, got %v", cfg.AllowedIPs)
+	}
+
+	// Production with custom ALLOWED_IPS
+	os.Setenv("APP_ENV", "production")
+	os.Setenv("ALLOWED_IPS", "10.0.0.1, 10.0.0.2")
+	defer func() {
+		os.Unsetenv("APP_ENV")
+		os.Unsetenv("ALLOWED_IPS")
+	}()
+
+	cfgProd := config.Load()
+	if !cfgProd.IsProduction() {
+		t.Errorf("Expected IsProduction true for production")
+	}
+	if len(cfgProd.AllowedIPs) != 2 || cfgProd.AllowedIPs[0] != "10.0.0.1" || cfgProd.AllowedIPs[1] != "10.0.0.2" {
+		t.Errorf("Expected custom AllowedIPs, got %v", cfgProd.AllowedIPs)
+	}
+}
+
+func TestConfig_Validate_Production_AllowedIPsRequired(t *testing.T) {
+	cfg := &config.Config{
+		AppEnv:             "production",
+		DBHost:             "localhost",
+		DBUser:             "root",
+		DBName:             "test_db",
+		JWTSecret:          "secret",
+		EncryptionKey:      "01234567890123456789012345678901",
+		URLBerkasDigital:   "http://localhost/berkas",
+		AllowedIPs:         nil, // Empty in production
+	}
+	os.Setenv("KODE_BERKAS_LAB_PA", "001")
+	defer os.Unsetenv("KODE_BERKAS_LAB_PA")
+
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("Expected validation error in production when AllowedIPs is empty")
+	}
+
+	// Now provide AllowedIPs
+	cfg.AllowedIPs = []string{"10.0.0.1"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Expected validation to pass when AllowedIPs is provided, got: %v", err)
+	}
+}
+

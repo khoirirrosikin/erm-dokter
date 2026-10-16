@@ -42,6 +42,11 @@ type Config struct {
 	EKLAIMKodeTarif             string
 	EKLAIMDefaultCoderNIK       string
 	URLAntreanPoli              string
+	AllowedIPs                 []string
+}
+
+func (c *Config) IsProduction() bool {
+	return strings.ToLower(strings.TrimSpace(c.AppEnv)) == "production"
 }
 
 func Load() *Config {
@@ -84,6 +89,16 @@ func Load() *Config {
 		return result
 	}
 
+	rawAllowedIPs := strings.TrimSpace(os.Getenv("ALLOWED_IPS"))
+	var allowedIPs []string
+	if rawAllowedIPs != "" {
+		for _, ip := range strings.Split(rawAllowedIPs, ",") {
+			if trimmed := strings.TrimSpace(ip); trimmed != "" {
+				allowedIPs = append(allowedIPs, trimmed)
+			}
+		}
+	}
+
 	cfg := &Config{
 		AppEnv:                      getEnvOrDefault("APP_ENV", "development"),
 		AppPort:                     getEnvOrDefault("APP_PORT", "8080"),
@@ -116,6 +131,7 @@ func Load() *Config {
 		EKLAIMKodeTarif:             getEnvOrDefault("EKLAIM_KODE_TARIF", "BP"),
 		EKLAIMDefaultCoderNIK:       getEnvOrDefault("EKLAIM_NIK_CODER", "1234567890123456"),
 		URLAntreanPoli:              strings.TrimSpace(os.Getenv("URL_ANTREAN_POLI")),
+		AllowedIPs:                 allowedIPs,
 	}
 	return cfg
 }
@@ -134,6 +150,9 @@ func (c *Config) Validate() error {
 		if val == "" {
 			return fmt.Errorf("environment variable %s wajib diisi", key)
 		}
+	}
+	if c.IsProduction() && len(c.AllowedIPs) == 0 {
+		return fmt.Errorf("environment variable ALLOWED_IPS wajib diisi pada mode production")
 	}
 	return nil
 }

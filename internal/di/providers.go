@@ -35,6 +35,8 @@ func ProvideRouteConfig(db *sql.DB, cfg *config.Config, log *logger.Logger) *rou
 		provideDiagnosa(db, cfg, log),
 		cfg.JWTSecret,
 		cfg.ServiceAPIKey,
+		cfg.AppEnv,
+		cfg.AllowedIPs,
 	)
 
 	rc.LoginRateLimitMiddleware = middleware.LoginRateLimitMiddleware(

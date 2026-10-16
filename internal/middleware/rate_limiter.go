@@ -13,100 +13,102 @@ import (
 	"erm-dokter/internal/pkg/response"
 )
 
-type rateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*visitor
-	rate     int
-	window   time.Duration
-}
-
-type visitor struct {
+type clientBucket struct {
 	tokens    int
 	lastReset time.Time
 }
 
-func NewRateLimiter(rate int, window time.Duration) *rateLimiter {
-	rl := &rateLimiter{
-		visitors: make(map[string]*visitor),
-		rate:     rate,
-		window:   window,
-	}
-
-	go rl.cleanupLoop()
-
-	return rl
+type RateLimiter struct {
+	mu          sync.Mutex
+	buckets     map[string]*clientBucket
+	limit       int
+	window      time.Duration
+	lastCleanup time.Time
 }
 
-func (rl *rateLimiter) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		rl.mu.Lock()
-		for key, v := range rl.visitors {
-			if time.Since(v.lastReset) > rl.window*2 {
-				delete(rl.visitors, key)
-			}
-		}
-		rl.mu.Unlock()
+func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
+	return &RateLimiter{
+		buckets:     make(map[string]*clientBucket),
+		limit:       limit,
+		window:      window,
+		lastCleanup: time.Now(),
 	}
 }
 
-func (rl *rateLimiter) allow(key string) bool {
+func (rl *RateLimiter) Allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	v, exists := rl.visitors[key]
-	if !exists {
-		rl.visitors[key] = &visitor{
-			tokens:    rl.rate - 1,
-			lastReset: time.Now(),
+	now := time.Now()
+
+	if now.Sub(rl.lastCleanup) > rl.window*2 {
+		for k, b := range rl.buckets {
+			if now.Sub(b.lastReset) > rl.window*2 {
+				delete(rl.buckets, k)
+			}
+		}
+		rl.lastCleanup = now
+	}
+
+	b, exists := rl.buckets[key]
+	if !exists || now.Sub(b.lastReset) >= rl.window {
+		rl.buckets[key] = &clientBucket{
+			tokens:    rl.limit - 1,
+			lastReset: now,
 		}
 		return true
 	}
 
-	if time.Since(v.lastReset) > rl.window {
-		v.tokens = rl.rate - 1
-		v.lastReset = time.Now()
-		return true
-	}
-
-	if v.tokens <= 0 {
+	if b.tokens <= 0 {
 		return false
 	}
 
-	v.tokens--
+	b.tokens--
 	return true
 }
 
-func GetClientIP(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		if len(parts) > 0 {
-			first := strings.TrimSpace(parts[0])
-			if first != "" {
-				return first
+func rateLimit(limiter *RateLimiter, keyFunc func(r *http.Request) string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !limiter.Allow(keyFunc(r)) {
+				response.Error(w, http.StatusTooManyRequests, "Terlalu banyak percobaan. Silakan coba lagi nanti.", nil)
+				return
 			}
+			next.ServeHTTP(w, r)
 		}
 	}
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
+}
+
+func RateLimitMiddleware(rate int, window time.Duration) func(http.HandlerFunc) http.HandlerFunc {
+	return rateLimit(NewRateLimiter(rate, window), GetClientIP)
+}
+
+func LoginRateLimitMiddleware(rate int, window time.Duration, enabled bool) func(http.HandlerFunc) http.HandlerFunc {
+	if !enabled {
+		return func(next http.HandlerFunc) http.HandlerFunc { return next }
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && host != "" {
-		return host
-	}
-	return r.RemoteAddr
+
+	limiter := NewRateLimiter(rate, window)
+	return rateLimit(limiter, func(r *http.Request) string {
+		ip := GetClientIP(r)
+		username := peekLoginUsername(r)
+		if username != "" {
+			return ip + ":" + username
+		}
+		return ip
+	})
 }
 
 func peekLoginUsername(r *http.Request) string {
 	if r.Body == nil {
 		return ""
 	}
+
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	if err != nil {
+	if err != nil || len(bodyBytes) == 0 {
 		return ""
 	}
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 	var payload struct {
 		Username string `json:"username"`
@@ -117,50 +119,22 @@ func peekLoginUsername(r *http.Request) string {
 	return strings.TrimSpace(payload.Username)
 }
 
-func RateLimitMiddleware(rate int, window time.Duration) func(http.HandlerFunc) http.HandlerFunc {
-	limiter := NewRateLimiter(rate, window)
-
-	return func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			ip := GetClientIP(r)
-
-			if !limiter.allow(ip) {
-				response.Error(w, http.StatusTooManyRequests, "Terlalu banyak percobaan. Silakan coba lagi nanti.", nil)
-				return
-			}
-
-			next.ServeHTTP(w, r)
+func GetClientIP(r *http.Request) string {
+	cleanIP := func(raw string) string {
+		raw = strings.TrimSpace(raw)
+		if host, _, err := net.SplitHostPort(raw); err == nil && host != "" {
+			return host
 		}
-	}
-}
-
-func LoginRateLimitMiddleware(rate int, window time.Duration, enabled bool) func(http.HandlerFunc) http.HandlerFunc {
-	if !enabled {
-		return func(next http.HandlerFunc) http.HandlerFunc {
-			return func(w http.ResponseWriter, r *http.Request) {
-				next.ServeHTTP(w, r)
-			}
-		}
+		return raw
 	}
 
-	limiter := NewRateLimiter(rate, window)
-
-	return func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			ip := GetClientIP(r)
-			username := peekLoginUsername(r)
-
-			key := ip
-			if username != "" {
-				key = ip + ":" + username
-			}
-
-			if !limiter.allow(key) {
-				response.Error(w, http.StatusTooManyRequests, "Terlalu banyak percobaan. Silakan coba lagi nanti.", nil)
-				return
-			}
-
-			next.ServeHTTP(w, r)
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		if first := strings.TrimSpace(strings.Split(forwarded, ",")[0]); first != "" {
+			return cleanIP(first)
 		}
 	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return cleanIP(realIP)
+	}
+	return cleanIP(r.RemoteAddr)
 }

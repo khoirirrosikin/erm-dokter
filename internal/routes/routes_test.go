@@ -48,6 +48,8 @@ func TestRouteConfig_SetupAndBuildHandler(t *testing.T) {
 		diagnosa.NewHandler(nil, "key"),
 		"test-jwt-secret",
 		"test-service-api-key",
+		"development",
+		[]string{"198.51.100.10", "198.51.100.20"},
 	)
 
 	routeCfg.Setup()
@@ -85,5 +87,116 @@ func TestRouteConfig_SetupAndBuildHandler(t *testing.T) {
 	}
 	if loginRR.Code != http.StatusTooManyRequests {
 		t.Errorf("Expected status 429 on /api/v1/auth/login, got %d", loginRR.Code)
+	}
+}
+
+func TestRouteConfig_Production_IPWhitelistAndDocsBlocking(t *testing.T) {
+	routeCfg := routes.NewRouteConfig(
+		health.NewHandler(),
+		docs.NewHandler(),
+		auth.NewHandler(nil),
+		master.NewHandler(nil),
+		obat.NewHandler(nil, "key"),
+		rawatjalan.NewHandler(nil, "key"),
+		rawatinap.NewHandler(nil, "key"),
+		pemeriksaan.NewHandler(nil, "key"),
+		resep.NewHandler(nil, "key"),
+		rujukaninternal.NewHandler(nil, "key"),
+		penilaianmedis.NewHandler(nil, "key"),
+		tindakan.NewHandler(nil, "key"),
+		laboratorium.NewHandler(nil, "key"),
+		radiologi.NewHandler(nil, "key"),
+		berkasdigital.NewHandler(nil, "key"),
+		resumepasien.NewHandler(nil, "key"),
+		pasien.NewHandler(nil, "key"),
+		diagnosa.NewHandler(nil, "key"),
+		"test-jwt-secret",
+		"test-service-api-key",
+		"production",
+		[]string{"198.51.100.10", "198.51.100.20"},
+	)
+
+	routeCfg.Setup()
+	handler := routeCfg.BuildHandler("*")
+
+	// 1. Health check bypasses IP check
+	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqHealth.RemoteAddr = "10.0.0.99:12345"
+	recHealth := httptest.NewRecorder()
+	handler.ServeHTTP(recHealth, reqHealth)
+	if recHealth.Code != http.StatusOK {
+		t.Errorf("Expected /health status 200 in production, got %d", recHealth.Code)
+	}
+
+	// 2. Allowed IP accessing API (e.g. 198.51.100.10) should pass whitelist (returns 401 due to missing token, NOT 403)
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/api/v1/master/poli", nil)
+	reqAllowed.RemoteAddr = "198.51.100.10:54321"
+	recAllowed := httptest.NewRecorder()
+	handler.ServeHTTP(recAllowed, reqAllowed)
+	if recAllowed.Code == http.StatusForbidden {
+		t.Errorf("Allowed IP 198.51.100.10 should not be forbidden, got 403")
+	}
+
+	// 3. Disallowed IP accessing API (e.g. 203.0.113.99) should receive 403 Forbidden
+	reqBlocked := httptest.NewRequest(http.MethodGet, "/api/v1/master/poli", nil)
+	reqBlocked.RemoteAddr = "203.0.113.99:54321"
+	recBlocked := httptest.NewRecorder()
+	handler.ServeHTTP(recBlocked, reqBlocked)
+	if recBlocked.Code != http.StatusForbidden {
+		t.Errorf("Disallowed IP should receive 403 Forbidden, got %d", recBlocked.Code)
+	}
+
+	// 4. Docs in production must return 404 Not Found even from allowed IP
+	reqDocsAllowed := httptest.NewRequest(http.MethodGet, "/docs", nil)
+	reqDocsAllowed.RemoteAddr = "198.51.100.10:54321"
+	recDocsAllowed := httptest.NewRecorder()
+	handler.ServeHTTP(recDocsAllowed, reqDocsAllowed)
+	if recDocsAllowed.Code != http.StatusNotFound {
+		t.Errorf("Expected /docs in production to return 404 Not Found, got %d", recDocsAllowed.Code)
+	}
+
+	reqDocsSpec := httptest.NewRequest(http.MethodGet, "/docs/openapi.yaml", nil)
+	reqDocsSpec.RemoteAddr = "198.51.100.20:54321"
+	recDocsSpec := httptest.NewRecorder()
+	handler.ServeHTTP(recDocsSpec, reqDocsSpec)
+	if recDocsSpec.Code != http.StatusNotFound {
+		t.Errorf("Expected /docs/openapi.yaml in production to return 404 Not Found, got %d", recDocsSpec.Code)
+	}
+}
+
+func TestRouteConfig_Development_DocsEnabled(t *testing.T) {
+	routeCfg := routes.NewRouteConfig(
+		health.NewHandler(),
+		docs.NewHandler(),
+		auth.NewHandler(nil),
+		master.NewHandler(nil),
+		obat.NewHandler(nil, "key"),
+		rawatjalan.NewHandler(nil, "key"),
+		rawatinap.NewHandler(nil, "key"),
+		pemeriksaan.NewHandler(nil, "key"),
+		resep.NewHandler(nil, "key"),
+		rujukaninternal.NewHandler(nil, "key"),
+		penilaianmedis.NewHandler(nil, "key"),
+		tindakan.NewHandler(nil, "key"),
+		laboratorium.NewHandler(nil, "key"),
+		radiologi.NewHandler(nil, "key"),
+		berkasdigital.NewHandler(nil, "key"),
+		resumepasien.NewHandler(nil, "key"),
+		pasien.NewHandler(nil, "key"),
+		diagnosa.NewHandler(nil, "key"),
+		"test-jwt-secret",
+		"test-service-api-key",
+		"development",
+		[]string{"198.51.100.10", "198.51.100.20"},
+	)
+
+	routeCfg.Setup()
+	handler := routeCfg.BuildHandler("*")
+
+	reqDocs := httptest.NewRequest(http.MethodGet, "/docs", nil)
+	recDocs := httptest.NewRecorder()
+	handler.ServeHTTP(recDocs, reqDocs)
+	if recDocs.Code != http.StatusOK {
+		t.Errorf("Expected /docs in development to return 200 OK, got %d", recDocs.Code)
 	}
 }

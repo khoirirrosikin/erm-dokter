@@ -2,6 +2,7 @@ package routes
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"erm-dokter/internal/auth"
@@ -49,6 +50,12 @@ type RouteConfig struct {
 	ServiceAuthMiddleware    func(http.HandlerFunc) http.HandlerFunc
 	TimeoutMiddleware        func(http.HandlerFunc) http.HandlerFunc
 	LoginRateLimitMiddleware func(http.HandlerFunc) http.HandlerFunc
+	AppEnv                   string
+	AllowedIPs              []string
+}
+
+func (c *RouteConfig) IsProduction() bool {
+	return strings.ToLower(strings.TrimSpace(c.AppEnv)) == "production"
 }
 
 func NewRouteConfig(
@@ -72,6 +79,8 @@ func NewRouteConfig(
 	diagnosaHandler *diagnosa.Handler,
 	jwtSecret string,
 	serviceAPIKey string,
+	appEnv string,
+	allowedIPs []string,
 ) *RouteConfig {
 	return &RouteConfig{
 		Mux:                      http.NewServeMux(),
@@ -97,6 +106,8 @@ func NewRouteConfig(
 		ServiceAuthMiddleware:    middleware.ServiceOrJWTMiddleware(jwtSecret, serviceAPIKey),
 		TimeoutMiddleware:        middleware.TimeoutMiddleware(30 * time.Second),
 		LoginRateLimitMiddleware: middleware.LoginRateLimitMiddleware(10, 1*time.Minute, true),
+		AppEnv:                   appEnv,
+		AllowedIPs:              allowedIPs,
 	}
 }
 
@@ -107,7 +118,9 @@ func (c *RouteConfig) Setup() {
 	}
 
 	c.HealthHandler.RegisterRoutes(c.Mux)
-	c.DocsHandler.RegisterRoutes(c.Mux)
+	if !c.IsProduction() {
+		c.DocsHandler.RegisterRoutes(c.Mux)
+	}
 	c.AuthHandler.RegisterRoutes(c.Mux, loginRateLimit, c.AuthMiddleware, c.TimeoutMiddleware)
 	c.MasterHandler.RegisterRoutes(c.Mux, c.AuthMiddleware, c.TimeoutMiddleware)
 	c.ObatHandler.RegisterRoutes(c.Mux, c.AuthMiddleware, c.TimeoutMiddleware)
@@ -128,6 +141,9 @@ func (c *RouteConfig) Setup() {
 
 func (c *RouteConfig) BuildHandler(corsOrigin string) http.Handler {
 	var h http.Handler = c.Mux
+	if c.IsProduction() {
+		h = middleware.IPWhitelistMiddleware(c.AllowedIPs)(h)
+	}
 	h = middleware.LoggingMiddleware(h)
 	h = middleware.RequestIDMiddleware(h)
 	h = middleware.CORSMiddleware(corsOrigin)(h)
