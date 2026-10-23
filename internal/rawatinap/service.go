@@ -30,14 +30,14 @@ func NewService(repo Repository, log *logger.Logger) Service {
 }
 
 func (s *service) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
-	cleanNoRawat := strings.TrimSpace(noRawat)
-	if cleanNoRawat == "" {
+	noRawat = strings.TrimSpace(noRawat)
+	if noRawat == "" {
 		return false, false, nil
 	}
 
-	isAktif, hasRecord, err := s.repo.CekStatusKamarInap(ctx, cleanNoRawat)
+	isAktif, hasRecord, err := s.repo.CekStatusKamarInap(ctx, noRawat)
 	if err != nil {
-		s.log.Error("Gagal memeriksa status kamar inap pasien %s: %v", cleanNoRawat, err)
+		s.log.Error("Gagal memeriksa status kamar inap pasien %s: %v", noRawat, err)
 		return false, false, err
 	}
 
@@ -45,14 +45,14 @@ func (s *service) CekStatusKamarInap(ctx context.Context, noRawat string) (bool,
 }
 
 func (s *service) GetKelasRawat(ctx context.Context, noRawat string) (string, error) {
-	cleanNoRawat := strings.TrimSpace(noRawat)
-	if cleanNoRawat == "" {
+	noRawat = strings.TrimSpace(noRawat)
+	if noRawat == "" {
 		return "", nil
 	}
 
-	kelas, err := s.repo.GetKelasRawat(ctx, cleanNoRawat)
+	kelas, err := s.repo.GetKelasRawat(ctx, noRawat)
 	if err != nil {
-		s.log.Error("Gagal mengambil kelas rawat inap pasien %s: %v", cleanNoRawat, err)
+		s.log.Error("Gagal mengambil kelas rawat inap pasien %s: %v", noRawat, err)
 		return "", err
 	}
 
@@ -60,10 +60,10 @@ func (s *service) GetKelasRawat(ctx context.Context, noRawat string) (string, er
 }
 
 func (s *service) DaftarPasienRawatInap(ctx context.Context, kodeDokterLogin string, filter FilterPasienRawatInap) ([]KunjunganRawatInap, shared.PaginationMeta, error) {
-	cleanKodeDokter := strings.TrimSpace(kodeDokterLogin)
-	list, total, err := s.repo.DaftarPasienRawatInap(ctx, cleanKodeDokter, filter)
+	kodeDokterLogin = strings.TrimSpace(kodeDokterLogin)
+	list, total, err := s.repo.DaftarPasienRawatInap(ctx, kodeDokterLogin, filter)
 	if err != nil {
-		s.log.Error("Gagal mengambil daftar pasien rawat inap oleh dokter %s: %v", cleanKodeDokter, err)
+		s.log.Error("Gagal mengambil daftar pasien rawat inap oleh dokter %s: %v", kodeDokterLogin, err)
 		return nil, shared.PaginationMeta{}, err
 	}
 
@@ -83,23 +83,23 @@ func (s *service) DaftarStatusPulang(ctx context.Context) []OpsiReferensi {
 }
 
 func (s *service) DetailPasienRawatInap(ctx context.Context, noRawat string, tglMasuk string, jamMasuk string) (*KunjunganRawatInap, error) {
-	cleanNoRawat := strings.TrimSpace(noRawat)
-	cleanTglMasuk := strings.TrimSpace(tglMasuk)
-	cleanJamMasuk := strings.TrimSpace(jamMasuk)
+	noRawat = strings.TrimSpace(noRawat)
+	tglMasuk = strings.TrimSpace(tglMasuk)
+	jamMasuk = strings.TrimSpace(jamMasuk)
 
-	if cleanNoRawat == "" {
+	if noRawat == "" {
 		return nil, apperror.NewBusinessError("Nomor rawat wajib diisi")
 	}
-	if cleanTglMasuk == "" {
+	if tglMasuk == "" {
 		return nil, apperror.NewBusinessError("Tanggal masuk kamar inap wajib diisi")
 	}
-	if cleanJamMasuk == "" {
+	if jamMasuk == "" {
 		return nil, apperror.NewBusinessError("Jam masuk kamar inap wajib diisi")
 	}
 
-	item, err := s.repo.DetailPasienRawatInap(ctx, cleanNoRawat, cleanTglMasuk, cleanJamMasuk)
+	item, err := s.repo.DetailPasienRawatInap(ctx, noRawat, tglMasuk, jamMasuk)
 	if err != nil {
-		s.log.Error("Gagal mengambil detail pasien rawat inap %s (%s %s): %v", cleanNoRawat, cleanTglMasuk, cleanJamMasuk, err)
+		s.log.Error("Gagal mengambil detail pasien rawat inap %s (%s %s): %v", noRawat, tglMasuk, jamMasuk, err)
 		return nil, err
 	}
 
