@@ -21,11 +21,11 @@
       "title": "Total HTTP Requests",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
-          "expr": "sum(count_over_time({app=\"erm-dokter\"} | json | msg=\"HTTP Request\" [$__range]))",
+          "datasource": { "type": "loki", "uid": "$datasource" },
+          "expr": "sum(count_over_time({app=\"erm-dokter\"} | json | method != \"\" [$__range]))",
           "refId": "A"
         }
       ],
@@ -46,10 +46,10 @@
       "title": "Total Error (5xx)",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
+          "datasource": { "type": "loki", "uid": "$datasource" },
           "expr": "sum(count_over_time({app=\"erm-dokter\"} | json | status >= 500 [$__range]))",
           "refId": "A"
         }
@@ -71,10 +71,10 @@
       "title": "Client Warnings (4xx)",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
+          "datasource": { "type": "loki", "uid": "$datasource" },
           "expr": "sum(count_over_time({app=\"erm-dokter\"} | json | status >= 400 and status < 500 [$__range]))",
           "refId": "A"
         }
@@ -96,11 +96,11 @@
       "title": "Login Dokter Berhasil",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
-          "expr": "sum(count_over_time({app=\"erm-dokter\"} | json | msg =~ \"(?i)login berhasil\" [$__range]))",
+          "datasource": { "type": "loki", "uid": "$datasource" },
+          "expr": "sum(count_over_time({app=\"erm-dokter\"} | json | msg =~ \"(?i).*login.*\" [$__range]))",
           "refId": "A"
         }
       ],
@@ -121,11 +121,11 @@
       "title": "Request Throughput by Status (req/sec)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
-          "expr": "sum by (status) (rate({app=\"erm-dokter\"} | json | msg=\"HTTP Request\" [1m]))",
+          "datasource": { "type": "loki", "uid": "$datasource" },
+          "expr": "sum by (status) (rate({app=\"erm-dokter\"} | json | method != \"\" [1m]))",
           "legendFormat": "Status {{status}}",
           "refId": "A"
         }
@@ -145,11 +145,11 @@
       "title": "Application Errors & Warnings (per min)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
-          "expr": "sum by (level) (count_over_time({app=\"erm-dokter\", level=~\"ERROR|WARN\"} [1m]))",
+          "datasource": { "type": "loki", "uid": "$datasource" },
+          "expr": "sum by (level) (count_over_time({app=\"erm-dokter\"} | json | level =~ \"(?i)error|warn\" [1m]))",
           "legendFormat": "Level {{level}}",
           "refId": "A"
         }
@@ -174,10 +174,10 @@
       "title": "Live Application Log Stream",
       "type": "logs",
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 14 },
-      "datasource": { "type": "loki", "uid": "Loki" },
+      "datasource": { "type": "loki", "uid": "$datasource" },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "Loki" },
+          "datasource": { "type": "loki", "uid": "$datasource" },
           "expr": "{app=\"erm-dokter\"}",
           "refId": "A"
         }
@@ -194,6 +194,24 @@
   "schemaVersion": 38,
   "style": "dark",
   "tags": ["erm-dokter", "khanza", "logs"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "loki",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
   "time": {
     "from": "now-1h",
     "to": "now"
@@ -204,5 +222,5 @@
   "timezone": "browser",
   "title": "ERM Dokter - System & Access Observability",
   "uid": "erm-dokter-observability",
-  "version": 1
+  "version": 2
 }
