@@ -149,3 +149,29 @@ type HasilPanggilAntrean struct {
 	KodePoli string `json:"kd_poli"`
 }
 
+type UpdateStatusPasienRequest struct {
+	StatusPemeriksaan StatusPemeriksaan `json:"status_pemeriksaan"`
+}
+
+func (u *UpdateStatusPasienRequest) Sanitize() {
+	u.StatusPemeriksaan = StatusPemeriksaan(strings.TrimSpace(string(u.StatusPemeriksaan)))
+}
+
+func (u UpdateStatusPasienRequest) Validate() apperror.ValidationError {
+	errs := make(apperror.ValidationError)
+	if u.StatusPemeriksaan == "" {
+		errs["status_pemeriksaan"] = "Status pemeriksaan wajib diisi"
+	} else if !u.StatusPemeriksaan.IsValid() {
+		errs["status_pemeriksaan"] = "Status pemeriksaan tidak valid"
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+type HasilUpdateStatusPasien struct {
+	Id                string            `json:"id"`
+	NoRawat           string            `json:"no_rawat,omitempty"`
+	StatusPemeriksaan StatusPemeriksaan `json:"status_pemeriksaan"`
+}

@@ -20,6 +20,7 @@ type Service interface {
 	GetWaktuRegistrasi(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	GetInfoRegistrasi(ctx context.Context, noRawat string) (*InfoRegistrasiPasien, error)
 	PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*HasilPanggilAntrean, error)
+	UpdateStatusPasien(ctx context.Context, noRawat string, kodeDokter string, req UpdateStatusPasienRequest) (*HasilUpdateStatusPasien, error)
 
 	DaftarStatusPemeriksaan(ctx context.Context) []OpsiReferensi
 	DaftarStatusLanjut(ctx context.Context) []OpsiReferensi
@@ -207,6 +208,40 @@ func (s *service) PanggilAntrean(ctx context.Context, noRawat string, kdPoli str
 	return &HasilPanggilAntrean{
 		NoRawat:  noRawat,
 		KodePoli: kdPoli,
+	}, nil
+}
+
+func (s *service) UpdateStatusPasien(ctx context.Context, noRawat string, kodeDokter string, req UpdateStatusPasienRequest) (*HasilUpdateStatusPasien, error) {
+	noRawat = strings.TrimSpace(noRawat)
+	if noRawat == "" {
+		return nil, apperror.NewBusinessError("Nomor rawat wajib diisi")
+	}
+
+	kodeDokter = strings.TrimSpace(kodeDokter)
+	exists, authorized, err := s.repo.CekAksesKunjungan(ctx, noRawat, kodeDokter)
+	if err != nil {
+		s.log.Error("Gagal memeriksa akses kunjungan %s: %v", noRawat, err)
+		return nil, err
+	}
+
+	if !exists {
+		return nil, apperror.NewNotFoundError("Data kunjungan pasien tidak ditemukan")
+	}
+
+	if !authorized {
+		return nil, apperror.NewForbiddenError("Anda tidak memiliki akses untuk mengubah status pemeriksaan pasien ini")
+	}
+
+	if err := s.repo.UpdateStatusPemeriksaan(ctx, noRawat, req.StatusPemeriksaan); err != nil {
+		s.log.Error("Gagal update status pemeriksaan kunjungan %s ke %s: %v", noRawat, req.StatusPemeriksaan, err)
+		return nil, err
+	}
+
+	s.log.Info("Berhasil mengubah status pemeriksaan no_rawat: %s menjadi %s oleh dokter %s", noRawat, req.StatusPemeriksaan, kodeDokter)
+
+	return &HasilUpdateStatusPasien{
+		NoRawat:           noRawat,
+		StatusPemeriksaan: req.StatusPemeriksaan,
 	}, nil
 }
 

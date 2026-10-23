@@ -18,6 +18,8 @@ type mockRepository struct {
 	riwayatKunjunganPasienFunc func(ctx context.Context, noRM string) ([]rawatjalan.KunjunganRawatJalan, error)
 	getInfoRegistrasiFunc      func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error)
 	getKodePoliByNoRawatFunc   func(ctx context.Context, noRawat string, kodeDokter string) (string, error)
+	cekAksesKunjunganFunc      func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error)
+	updateStatusPemeriksaanFunc func(ctx context.Context, noRawat string, status rawatjalan.StatusPemeriksaan) error
 }
 
 func (m *mockRepository) DaftarAntreanDokter(ctx context.Context, kodeDokter string, filter rawatjalan.FilterAntreanDokter) ([]rawatjalan.KunjunganRawatJalan, int, error) {
@@ -62,6 +64,20 @@ func (m *mockRepository) GetKodePoliByNoRawat(ctx context.Context, noRawat strin
 		return m.getKodePoliByNoRawatFunc(ctx, noRawat, kodeDokter)
 	}
 	return "U0001", nil
+}
+
+func (m *mockRepository) CekAksesKunjungan(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+	if m.cekAksesKunjunganFunc != nil {
+		return m.cekAksesKunjunganFunc(ctx, noRawat, kodeDokter)
+	}
+	return true, true, nil
+}
+
+func (m *mockRepository) UpdateStatusPemeriksaan(ctx context.Context, noRawat string, status rawatjalan.StatusPemeriksaan) error {
+	if m.updateStatusPemeriksaanFunc != nil {
+		return m.updateStatusPemeriksaanFunc(ctx, noRawat, status)
+	}
+	return nil
 }
 
 
@@ -448,6 +464,116 @@ func TestPanggilAntrean(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "status error 500") {
 			t.Errorf("pesan error tidak sesuai: %v", err)
+		}
+	})
+}
+
+func TestService_UpdateStatusPasien(t *testing.T) {
+	log := logger.New()
+	ctx := context.Background()
+
+	t.Run("Sukses Update Status", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return true, true, nil
+			},
+			updateStatusPemeriksaanFunc: func(ctx context.Context, noRawat string, status rawatjalan.StatusPemeriksaan) error {
+				if status != rawatjalan.StatusSudah {
+					t.Errorf("expected status %s, got %s", rawatjalan.StatusSudah, status)
+				}
+				return nil
+			},
+		}
+
+		svc := rawatjalan.NewService(repo, log)
+		hasil, err := svc.UpdateStatusPasien(ctx, "2026/09/04/000001", "D001", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hasil == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if hasil.NoRawat != "2026/09/04/000001" {
+			t.Errorf("expected NoRawat 2026/09/04/000001, got %s", hasil.NoRawat)
+		}
+		if hasil.StatusPemeriksaan != rawatjalan.StatusSudah {
+			t.Errorf("expected StatusPemeriksaan %s, got %s", rawatjalan.StatusSudah, hasil.StatusPemeriksaan)
+		}
+	})
+
+	t.Run("Nomor Rawat Kosong", func(t *testing.T) {
+		svc := rawatjalan.NewService(&mockRepository{}, log)
+		_, err := svc.UpdateStatusPasien(ctx, "   ", "D001", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+		if err == nil {
+			t.Fatal("expected business error for empty no_rawat")
+		}
+	})
+
+	t.Run("Kunjungan Tidak Ditemukan", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return false, false, nil
+			},
+		}
+		svc := rawatjalan.NewService(repo, log)
+		_, err := svc.UpdateStatusPasien(ctx, "2026/09/04/000001", "D001", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+		if err == nil {
+			t.Fatal("expected not found error")
+		}
+	})
+
+	t.Run("Dokter Tidak Berwenang", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return true, false, nil
+			},
+		}
+		svc := rawatjalan.NewService(repo, log)
+		_, err := svc.UpdateStatusPasien(ctx, "2026/09/04/000001", "D999", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+		if err == nil {
+			t.Fatal("expected forbidden error")
+		}
+	})
+
+	t.Run("Error Pada CekAkses Repo", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return false, false, io.ErrUnexpectedEOF
+			},
+		}
+		svc := rawatjalan.NewService(repo, log)
+		_, err := svc.UpdateStatusPasien(ctx, "2026/09/04/000001", "D001", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+		if err == nil {
+			t.Fatal("expected repo error")
+		}
+	})
+
+	t.Run("Error Pada UpdateStatus Repo", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return true, true, nil
+			},
+			updateStatusPemeriksaanFunc: func(ctx context.Context, noRawat string, status rawatjalan.StatusPemeriksaan) error {
+				return io.ErrClosedPipe
+			},
+		}
+		svc := rawatjalan.NewService(repo, log)
+		_, err := svc.UpdateStatusPasien(ctx, "2026/09/04/000001", "D001", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+		if err == nil {
+			t.Fatal("expected repo error")
 		}
 	})
 }

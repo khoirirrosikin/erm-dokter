@@ -79,3 +79,54 @@ func TestKunjunganRawatJalan_Formatters(t *testing.T) {
 		t.Error("Expected non-empty format umur")
 	}
 }
+
+func TestUpdateStatusPasienRequest_Validation(t *testing.T) {
+	t.Run("Valid status", func(t *testing.T) {
+		req := rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		}
+		req.Sanitize()
+		if errs := req.Validate(); errs != nil {
+			t.Errorf("Expected valid request, got: %+v", errs)
+		}
+	})
+
+	t.Run("Sanitize trims spaces", func(t *testing.T) {
+		req := rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: "  Sudah  ",
+		}
+		req.Sanitize()
+		if req.StatusPemeriksaan != rawatjalan.StatusSudah {
+			t.Errorf("Expected %s, got %s", rawatjalan.StatusSudah, req.StatusPemeriksaan)
+		}
+		if errs := req.Validate(); errs != nil {
+			t.Errorf("Expected valid request, got: %+v", errs)
+		}
+	})
+
+	t.Run("Empty status", func(t *testing.T) {
+		req := rawatjalan.UpdateStatusPasienRequest{}
+		req.Sanitize()
+		errs := req.Validate()
+		if errs == nil {
+			t.Fatal("Expected error for empty status")
+		}
+		if _, exists := errs["status_pemeriksaan"]; !exists {
+			t.Error("Expected status_pemeriksaan error key")
+		}
+	})
+
+	t.Run("Invalid status value", func(t *testing.T) {
+		req := rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: "StatusNgawur",
+		}
+		req.Sanitize()
+		errs := req.Validate()
+		if errs == nil {
+			t.Fatal("Expected error for invalid status")
+		}
+		if _, exists := errs["status_pemeriksaan"]; !exists {
+			t.Error("Expected status_pemeriksaan error key")
+		}
+	})
+}

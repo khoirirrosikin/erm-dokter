@@ -235,6 +235,50 @@ paths:
                                         example: Berhasil mengambil detail kunjungan pasien
                                     data:
                                         $ref: "#/components/schemas/KunjunganRawatJalan"
+    /api/v1/rawat-jalan/{id_kunjungan}/status:
+        put:
+            tags: [Rawat Jalan]
+            summary: Update Status Pemeriksaan Pasien Rawat Jalan
+            description: Memperbarui status pemeriksaan kunjungan rawat jalan (kolom stts di reg_periksa). Hanya dokter pemeriksa (dokter poli asal atau dokter rujukan internal) yang berwenang memperbarui status.
+            security:
+                - BearerAuth: []
+            parameters:
+                - name: id_kunjungan
+                  in: path
+                  required: true
+                  description: Encrypted ID Kunjungan
+                  schema:
+                      type: string
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/UpdateStatusPasienRequest"
+            responses:
+                "200":
+                    description: Berhasil memperbarui status pemeriksaan pasien
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    success:
+                                        type: boolean
+                                        example: true
+                                    message:
+                                        type: string
+                                        example: Berhasil memperbarui status pemeriksaan pasien
+                                    data:
+                                        $ref: "#/components/schemas/HasilUpdateStatusPasien"
+                "400":
+                    description: Validasi data gagal atau ID kunjungan tidak valid
+                "401":
+                    description: Tidak terautentikasi
+                "403":
+                    description: Dokter tidak berwenang memperbarui status kunjungan ini
+                "404":
+                    description: Data kunjungan pasien tidak ditemukan
     /api/v1/rawat-jalan/{id_kunjungan}/panggil:
         post:
             tags: [Rawat Jalan]
@@ -416,4 +460,24 @@ components:
                 kd_poli:
                     type: string
                     example: "U0001"
+        UpdateStatusPasienRequest:
+            type: object
+            required:
+                - status_pemeriksaan
+            properties:
+                status_pemeriksaan:
+                    type: string
+                    description: Status pemeriksaan baru
+                    enum: [Belum, Sudah, Batal, Berkas Diterima, Dirujuk, Meninggal, Dirawat, Pulang Paksa]
+                    example: "Sudah"
+        HasilUpdateStatusPasien:
+            type: object
+            properties:
+                id:
+                    type: string
+                    description: Encrypted ID Kunjungan
+                    example: "enc_kunjungan_12345"
+                status_pemeriksaan:
+                    type: string
+                    example: "Sudah"
 

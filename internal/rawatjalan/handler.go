@@ -38,6 +38,7 @@ func (h *Handler) RegisterRoutes(
 
 	mux.HandleFunc("GET /api/v1/rawat-jalan/antrean", serviceAuthMiddleware(timeoutMiddleware(h.DaftarAntreanDokter)))
 	mux.HandleFunc("GET /api/v1/rawat-jalan/{id_kunjungan}", authMiddleware(timeoutMiddleware(h.DetailKunjungan)))
+	mux.HandleFunc("PUT /api/v1/rawat-jalan/{id_kunjungan}/status", authMiddleware(timeoutMiddleware(h.UpdateStatusPasien)))
 	mux.HandleFunc("POST /api/v1/rawat-jalan/{id_kunjungan}/panggil", serviceAuthMiddleware(timeoutMiddleware(h.PanggilAntrean)))
 }
 
@@ -181,5 +182,46 @@ func (h *Handler) PanggilAntrean(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(w, "Berhasil memanggil antrean pasien ke display", hasil)
+}
+
+func (h *Handler) UpdateStatusPasien(w http.ResponseWriter, r *http.Request) {
+	idKunjungan := strings.TrimSpace(r.PathValue("id_kunjungan"))
+	if idKunjungan == "" {
+		apperror.HandleError(w, apperror.NewBusinessError("ID kunjungan wajib diisi"))
+		return
+	}
+
+	noRawat, err := crypto.Decrypt(idKunjungan, h.encryptionKey)
+	if err != nil {
+		apperror.HandleError(w, apperror.NewBusinessError("ID kunjungan tidak valid"))
+		return
+	}
+
+	var req UpdateStatusPasienRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apperror.HandleError(w, apperror.NewBusinessError("Format data status tidak valid"))
+		return
+	}
+
+	req.Sanitize()
+	if errs := req.Validate(); errs != nil {
+		apperror.HandleError(w, errs)
+		return
+	}
+
+	kodeDokter, err := middleware.GetKodeDokter(r.Context())
+	if err != nil {
+		apperror.HandleError(w, err)
+		return
+	}
+
+	hasil, err := h.rawatJalanService.UpdateStatusPasien(r.Context(), noRawat, kodeDokter, req)
+	if err != nil {
+		apperror.HandleError(w, err)
+		return
+	}
+
+	hasil.Id = idKunjungan
+	response.Success(w, "Berhasil memperbarui status pemeriksaan pasien", hasil)
 }
 
