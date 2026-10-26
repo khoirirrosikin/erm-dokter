@@ -25,7 +25,7 @@ func main() {
 	}
 
 	db, err := database.InitMySQL(
-		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPass, cfg.DBName,
+		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPass, cfg.DBName, log,
 	)
 	if err != nil {
 		log.Error("Database MySQL connection failed: %v", err)
