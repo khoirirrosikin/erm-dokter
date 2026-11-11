@@ -2,6 +2,7 @@ package resep_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -1666,4 +1667,70 @@ func TestUpdateResep_MetodeRacikNotFound(t *testing.T) {
 	if !errors.As(err, &valErr) {
 		t.Fatalf("expected ValidationError, got %T: %v", err, err)
 	}
+}
+
+func TestUpdateAndHapusResep_ErrNoRowsMapsToNotFound(t *testing.T) {
+	today := time.Now().Format("2006-01-02")
+	existingDetail := func(ctx context.Context, noResep string) (*resep.Resep, error) {
+		return &resep.Resep{
+			NoResep:           noResep,
+			NoRawat:           "2026/08/28/000001",
+			KodeDokter:        "DK001",
+			Status:            "ralan",
+			TanggalPerawatan:  "0000-00-00",
+			JamPerawatan:      "00:00:00",
+			TanggalPenyerahan: "0000-00-00",
+			JamPenyerahan:     "00:00:00",
+		}, nil
+	}
+
+	mockRJ := &mockRawatJalanService{
+		getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+			return today, "08:00:00", true, nil
+		},
+	}
+
+	t.Run("UpdateResep maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailResepFunc: existingDetail,
+			updateResepFunc: func(ctx context.Context, noResep string, req resep.SimpanResepRequest) (*resep.Resep, error) {
+				return nil, sql.ErrNoRows
+			},
+		}
+		svc := resep.NewService(mockRepo, mockRJ, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+		req := resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: today,
+			JamPeresepan:     "09:00:00",
+			ResepDokter: []resep.ResepDokterInput{
+				{
+					ItemObatInput: resep.ItemObatInput{KodeObat: "OBAT001", Jumlah: 10},
+					AturanPakai:   "3x1",
+				},
+			},
+		}
+
+		_, err := svc.UpdateResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatJalan, req)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("HapusResep maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailResepFunc: existingDetail,
+			hapusResepFunc: func(ctx context.Context, noResep string) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := resep.NewService(mockRepo, mockRJ, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+		err := svc.HapusResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatJalan)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
 }

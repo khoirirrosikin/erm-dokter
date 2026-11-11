@@ -2,6 +2,8 @@ package resep
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -131,6 +133,12 @@ func (s *service) HapusResep(ctx context.Context, kodeDokter, noRawat, noResep s
 	}
 
 	if err := s.repo.HapusResep(ctx, noResep); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError(
+				"Resep obat tidak ditemukan",
+				fmt.Sprintf("Data resep no_resep '%s' tidak ditemukan", noResep),
+			)
+		}
 		s.log.Error("Gagal menghapus resep obat no_resep '%s' untuk no_rawat '%s' oleh dokter '%s': %v", noResep, noRawat, kodeDokter, err)
 		return err
 	}
@@ -163,6 +171,12 @@ func (s *service) UpdateResep(ctx context.Context, kodeDokter, noRawat, noResep 
 
 	updatedResep, err := s.repo.UpdateResep(ctx, noResep, req)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError(
+				"Resep obat tidak ditemukan",
+				fmt.Sprintf("Data resep no_resep '%s' tidak ditemukan", noResep),
+			)
+		}
 		s.log.Error("Gagal memperbarui resep obat no_resep '%s' untuk no_rawat '%s' (%s) oleh dokter '%s': %v", noResep, noRawat, statusLanjut, kodeDokter, err)
 		return nil, err
 	}

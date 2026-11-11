@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/formatter"
 )
@@ -159,6 +160,9 @@ func (r *repository) queryResep(ctx context.Context, whereClause string, paramVa
 }
 
 func (r *repository) loadResepDokter(ctx context.Context, listNoResep []string, listResep []Resep, resepIndexMap map[string]int) error {
+	if len(listNoResep) == 0 {
+		return nil
+	}
 	inPlaceholders := shared.CreateInPlaceholders(len(listNoResep))
 	args := make([]any, len(listNoResep))
 	for i, nr := range listNoResep {
@@ -205,6 +209,9 @@ func (r *repository) loadResepDokter(ctx context.Context, listNoResep []string, 
 }
 
 func (r *repository) loadResepRacikan(ctx context.Context, listNoResep []string, listResep []Resep, resepIndexMap map[string]int) error {
+	if len(listNoResep) == 0 {
+		return nil
+	}
 	inPlaceholders := shared.CreateInPlaceholders(len(listNoResep))
 	args := make([]any, len(listNoResep))
 	for i, nr := range listNoResep {
@@ -224,7 +231,7 @@ func (r *repository) loadResepRacikan(ctx context.Context, listNoResep []string,
 		FROM resep_dokter_racikan rdr
 		LEFT JOIN metode_racik mr ON rdr.kd_racik = mr.kd_racik
 		WHERE rdr.no_resep IN (%s)
-		ORDER BY rdr.no_racik ASC`, inPlaceholders)
+		ORDER BY rdr.no_resep ASC, CAST(rdr.no_racik AS UNSIGNED) ASC, rdr.no_racik ASC`, inPlaceholders)
 
 	rows, err := r.db.QueryContext(ctx, queryRacik, args...)
 	if err != nil {
@@ -232,7 +239,11 @@ func (r *repository) loadResepRacikan(ctx context.Context, listNoResep []string,
 	}
 	defer rows.Close()
 
-	racikanMap := make(map[string]*ResepDokterRacikan)
+	type racikanPos struct {
+		resepIdx int
+		racikIdx int
+	}
+	racikanMap := make(map[string]racikanPos)
 
 	for rows.Next() {
 		var rdr ResepDokterRacikan
@@ -253,8 +264,11 @@ func (r *repository) loadResepRacikan(ctx context.Context, listNoResep []string,
 		if idx, exists := resepIndexMap[rdr.NoResep]; exists {
 			listResep[idx].ResepDokterRacikan = append(listResep[idx].ResepDokterRacikan, rdr)
 			lastIdx := len(listResep[idx].ResepDokterRacikan) - 1
-			key := fmt.Sprintf("%s_%s", rdr.NoResep, rdr.NoRacik)
-			racikanMap[key] = &listResep[idx].ResepDokterRacikan[lastIdx]
+			key := rdr.NoResep + "\x00" + rdr.NoRacik
+			racikanMap[key] = racikanPos{
+				resepIdx: idx,
+				racikIdx: lastIdx,
+			}
 		}
 	}
 
@@ -278,7 +292,7 @@ func (r *repository) loadResepRacikan(ctx context.Context, listNoResep []string,
 		FROM resep_dokter_racikan_detail rdrd
 		LEFT JOIN databarang dtb ON rdrd.kode_brng = dtb.kode_brng
 		WHERE rdrd.no_resep IN (%s)
-		ORDER BY rdrd.no_racik ASC`, inPlaceholders)
+		ORDER BY rdrd.no_resep ASC, CAST(rdrd.no_racik AS UNSIGNED) ASC, rdrd.no_racik ASC, rdrd.kode_brng ASC`, inPlaceholders)
 
 	detailRows, err := r.db.QueryContext(ctx, queryDetail, args...)
 	if err != nil {
@@ -300,9 +314,10 @@ func (r *repository) loadResepRacikan(ctx context.Context, listNoResep []string,
 			return err
 		}
 
-		key := fmt.Sprintf("%s_%s", d.NoResep, d.NoRacik)
-		if racikPtr, exists := racikanMap[key]; exists {
-			racikPtr.DetailRacikan = append(racikPtr.DetailRacikan, d)
+		key := d.NoResep + "\x00" + d.NoRacik
+		if pos, exists := racikanMap[key]; exists {
+			racik := &listResep[pos.resepIdx].ResepDokterRacikan[pos.racikIdx]
+			racik.DetailRacikan = append(racik.DetailRacikan, d)
 		}
 	}
 
@@ -485,7 +500,11 @@ func (r *repository) HapusResep(ctx context.Context, noResep string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM resep_dokter WHERE no_resep = ?", noResep); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM resep_obat WHERE no_resep = ?", noResep); err != nil {
+	res, err := tx.ExecContext(ctx, "DELETE FROM resep_obat WHERE no_resep = ?", noResep)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 
@@ -500,7 +519,11 @@ func (r *repository) UpdateResep(ctx context.Context, noResep string, req Simpan
 	defer tx.Rollback()
 
 	updateQuery := `UPDATE resep_obat SET tgl_peresepan = ?, jam_peresepan = ? WHERE no_resep = ?`
-	if _, err := tx.ExecContext(ctx, updateQuery, req.TanggalPeresepan, req.JamPeresepan, noResep); err != nil {
+	res, err := tx.ExecContext(ctx, updateQuery, req.TanggalPeresepan, req.JamPeresepan, noResep)
+	if err != nil {
+		return nil, err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return nil, err
 	}
 
