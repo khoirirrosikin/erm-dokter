@@ -1670,7 +1670,8 @@ func TestUpdateResep_MetodeRacikNotFound(t *testing.T) {
 }
 
 func TestUpdateAndHapusResep_ErrNoRowsMapsToNotFound(t *testing.T) {
-	today := time.Now().Format("2006-01-02")
+	now := time.Now()
+	regTime := now.Add(-1 * time.Hour)
 	existingDetail := func(ctx context.Context, noResep string) (*resep.Resep, error) {
 		return &resep.Resep{
 			NoResep:           noResep,
@@ -1686,7 +1687,7 @@ func TestUpdateAndHapusResep_ErrNoRowsMapsToNotFound(t *testing.T) {
 
 	mockRJ := &mockRawatJalanService{
 		getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
-			return today, "08:00:00", true, nil
+			return regTime.Format("2006-01-02"), regTime.Format("15:04:05"), true, nil
 		},
 	}
 
@@ -1701,8 +1702,8 @@ func TestUpdateAndHapusResep_ErrNoRowsMapsToNotFound(t *testing.T) {
 
 		req := resep.SimpanResepRequest{
 			NoRawat:          "2026/08/28/000001",
-			TanggalPeresepan: today,
-			JamPeresepan:     "09:00:00",
+			TanggalPeresepan: now.Format("2006-01-02"),
+			JamPeresepan:     now.Format("15:04:05"),
 			ResepDokter: []resep.ResepDokterInput{
 				{
 					ItemObatInput: resep.ItemObatInput{KodeObat: "OBAT001", Jumlah: 10},

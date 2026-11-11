@@ -2126,8 +2126,8 @@ func TestService_ValidasiKepemilikanDokter_StandardizedMessage(t *testing.T) {
 
 func TestService_UpdateAndHapus_ErrNoRowsMapsToNotFound(t *testing.T) {
 	log := logger.New()
-	today := time.Now().Format("2006-01-02")
-	rjSvc := &mockRawatJalanService{tglReg: today, jamReg: "08:00:00", exists: true}
+	regTime := time.Now().Add(-1 * time.Hour)
+	rjSvc := &mockRawatJalanService{tglReg: regTime.Format("2006-01-02"), jamReg: regTime.Format("15:04:05"), exists: true}
 	riSvc := &mockRawatInapService{
 		cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
 			return true, true, nil

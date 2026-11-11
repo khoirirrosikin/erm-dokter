@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
@@ -29,8 +30,8 @@ func TestBuildDSN(t *testing.T) {
 		if cfg.ParseTime {
 			t.Error("expected ParseTime to be false")
 		}
-		if cfg.Loc != time.Local {
-			t.Errorf("expected Loc to be time.Local, got %v", cfg.Loc)
+		if cfg.Loc == nil || cfg.Loc.String() != time.Local.String() {
+			t.Errorf("expected Loc %q, got %v", time.Local.String(), cfg.Loc)
 		}
 		if cfg.Timeout != 5*time.Second {
 			t.Errorf("expected Timeout 5s, got %v", cfg.Timeout)
@@ -63,6 +64,26 @@ func TestBuildDSN(t *testing.T) {
 		}
 		if cfg.DBName != "sik_prod" {
 			t.Errorf("expected DBName 'sik_prod', got %q", cfg.DBName)
+		}
+	})
+
+	t.Run("Named timezone location Asia/Jakarta", func(t *testing.T) {
+		origLocal := time.Local
+		t.Cleanup(func() { time.Local = origLocal })
+
+		jakarta, err := time.LoadLocation("Asia/Jakarta")
+		if err != nil {
+			t.Fatalf("failed to load Asia/Jakarta: %v", err)
+		}
+		time.Local = jakarta
+
+		dsn := buildDSN("127.0.0.1", "3306", "root", "p@ss/w?rd#1:x", "sik")
+		cfg, err := mysqlDriver.ParseDSN(dsn)
+		if err != nil {
+			t.Fatalf("expected valid MySQL DSN with Asia/Jakarta, got error: %v (dsn=%s)", err, dsn)
+		}
+		if cfg.Loc == nil || cfg.Loc.String() != "Asia/Jakarta" {
+			t.Errorf("expected Loc 'Asia/Jakarta', got %v", cfg.Loc)
 		}
 	})
 }
