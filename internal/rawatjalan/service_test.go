@@ -2,6 +2,8 @@ package rawatjalan_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/rawatjalan"
+	"erm-dokter/internal/shared/apperror"
 )
 
 type mockRepository struct {
@@ -574,6 +577,25 @@ func TestService_UpdateStatusPasien(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("expected repo error")
+		}
+	})
+
+	t.Run("ErrNoRows Pada UpdateStatus Repo Dipetakan Ke NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return true, true, nil
+			},
+			updateStatusPemeriksaanFunc: func(ctx context.Context, noRawat string, status rawatjalan.StatusPemeriksaan) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := rawatjalan.NewService(repo, log)
+		_, err := svc.UpdateStatusPasien(ctx, "2026/09/04/000001", "D001", rawatjalan.UpdateStatusPasienRequest{
+			StatusPemeriksaan: rawatjalan.StatusSudah,
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
 		}
 	})
 }

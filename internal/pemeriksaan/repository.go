@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/formatter"
 )
@@ -327,12 +328,12 @@ func (r *repository) UpdatePemeriksaan(ctx context.Context, id IdPemeriksaan, st
 		return fmt.Errorf("repository: status lanjut '%s' tidak didukung", statusLanjut)
 	}
 
-	_, err := r.db.ExecContext(ctx, query, args...)
+	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	return database.CheckRowsAffected(res)
 }
 
 const deletePemeriksaanRalan = `
@@ -356,10 +357,10 @@ func (r *repository) HapusPemeriksaan(ctx context.Context, id IdPemeriksaan, sta
 		return fmt.Errorf("repository: status lanjut '%s' tidak didukung", statusLanjut)
 	}
 
-	_, err := r.db.ExecContext(ctx, query, id.NoRawat, id.TanggalPemeriksaan, id.JamPemeriksaan)
+	res, err := r.db.ExecContext(ctx, query, id.NoRawat, id.TanggalPemeriksaan, id.JamPemeriksaan)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	return database.CheckRowsAffected(res)
 }

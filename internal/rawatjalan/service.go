@@ -2,6 +2,8 @@ package rawatjalan
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -233,6 +235,9 @@ func (s *service) UpdateStatusPasien(ctx context.Context, noRawat string, kodeDo
 	}
 
 	if err := s.repo.UpdateStatusPemeriksaan(ctx, noRawat, req.StatusPemeriksaan); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError("Data kunjungan pasien tidak ditemukan")
+		}
 		s.log.Error("Gagal update status pemeriksaan kunjungan %s ke %s: %v", noRawat, req.StatusPemeriksaan, err)
 		return nil, err
 	}

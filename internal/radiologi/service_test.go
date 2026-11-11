@@ -2,6 +2,7 @@ package radiologi_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -459,4 +460,67 @@ func TestService_DetailPermintaanRadiologi_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected NotFound error, got nil")
 	}
+}
+
+func TestService_UpdateAndHapusPermintaanRadiologi_ErrNoRowsMapsToNotFound(t *testing.T) {
+	now := time.Now().Add(-1 * time.Hour)
+	tgl := now.Format("2006-01-02")
+	jam := now.Format("15:04:05")
+
+	existingDetail := func(ctx context.Context, noPermintaan string) (*radiologi.DetailPermintaanRadiologi, error) {
+		return &radiologi.DetailPermintaanRadiologi{
+			PermintaanRadiologiHeader: radiologi.PermintaanRadiologiHeader{
+				NoPermintaan:      noPermintaan,
+				NoRawat:           "2026/09/05/000001",
+				TanggalPermintaan: tgl,
+				JamPermintaan:     jam,
+				DokterPerujuk:     radiologi.DokterInfo{KodeDokter: "DR01", NamaDokter: "dr. SpRad"},
+				Status:            "Ralan",
+				TanggalSampel:     "0000-00-00",
+				TanggalHasil:      "0000-00-00",
+			},
+		}, nil
+	}
+
+	t.Run("UpdatePermintaanRadiologi maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailPermintaanRadiologiFn: existingDetail,
+			updatePermintaanRadiologiFn: func(ctx context.Context, noPermintaan string, req radiologi.SimpanPermintaanRadiologiRequest, kodeTindakanList []string) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := createTestService(mockRepo, nil, nil, nil)
+
+		req := radiologi.SimpanPermintaanRadiologiRequest{
+			NoRawat:           "2026/09/05/000001",
+			TanggalPermintaan: tgl,
+			JamPermintaan:     jam,
+			DiagnosaKlinis:    "Pneumonia",
+			Pemeriksaan: []radiologi.ItemPemeriksaanRadiologiRequest{
+				{KodeTindakan: "RAD001"},
+			},
+		}
+
+		_, err := svc.UpdatePermintaanRadiologi(context.Background(), "DR01", "2026/09/05/000001", "RAD202609050001", shared.StatusLanjutRawatJalan, req)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("HapusPermintaanRadiologi maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailPermintaanRadiologiFn: existingDetail,
+			hapusPermintaanRadiologiFn: func(ctx context.Context, noPermintaan string) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := createTestService(mockRepo, nil, nil, nil)
+
+		err := svc.HapusPermintaanRadiologi(context.Background(), "DR01", "2026/09/05/000001", "RAD202609050001", shared.StatusLanjutRawatJalan)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
 }

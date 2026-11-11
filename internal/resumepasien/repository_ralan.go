@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"erm-dokter/internal/pkg/database"
 )
 
 const selectResumePasienRalan = `
@@ -220,7 +222,7 @@ func (r *repository) UpdateResumePasienRalan(ctx context.Context, noRawat string
 		WHERE no_rawat = ?
 	`
 
-	_, err := r.db.ExecContext(ctx, query,
+	res, err := r.db.ExecContext(ctx, query,
 		req.KeluhanUtama,
 		req.JalannyaPenyakit,
 		req.HasilPemeriksaanRadiologi,
@@ -250,12 +252,18 @@ func (r *repository) UpdateResumePasienRalan(ctx context.Context, noRawat string
 	if err != nil {
 		return nil, err
 	}
+	if err := database.CheckRowsAffected(res); err != nil {
+		return nil, err
+	}
 
 	return r.DetailResumePasienRalan(ctx, noRawat)
 }
 
 func (r *repository) HapusResumePasienRalan(ctx context.Context, noRawat string) error {
 	query := "DELETE FROM resume_pasien WHERE no_rawat = ?"
-	_, err := r.db.ExecContext(ctx, query, noRawat)
-	return err
+	res, err := r.db.ExecContext(ctx, query, noRawat)
+	if err != nil {
+		return err
+	}
+	return database.CheckRowsAffected(res)
 }

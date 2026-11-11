@@ -74,6 +74,9 @@ func (s *service) UpdateResumePasienRalan(ctx context.Context, kodeDokterLogin, 
 
 	item, err := s.repo.UpdateResumePasienRalan(ctx, noRawat, req)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError("Data resume pasien rawat jalan tidak ditemukan")
+		}
 		s.log.Error("Gagal memperbarui resume pasien ralan no_rawat %s: %v", noRawat, err)
 		return nil, err
 	}
@@ -101,6 +104,9 @@ func (s *service) HapusResumePasienRalan(ctx context.Context, kodeDokterLogin, n
 	}
 
 	if err := s.repo.HapusResumePasienRalan(ctx, noRawat); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError("Data resume pasien rawat jalan tidak ditemukan")
+		}
 		s.log.Error("Gagal menghapus resume pasien ralan no_rawat %s: %v", noRawat, err)
 		return err
 	}

@@ -3,6 +3,8 @@ package rujukaninternal
 import (
 	"context"
 	"database/sql"
+
+	"erm-dokter/internal/pkg/database"
 )
 
 type Repository interface {
@@ -154,12 +156,5 @@ func (r *repository) HapusRujukanInternal(ctx context.Context, noRawat, kdDokter
 	if err != nil {
 		return err
 	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return database.CheckRowsAffected(res)
 }

@@ -75,6 +75,9 @@ func (s *service) UpdatePenilaianMedisRanap(ctx context.Context, kodeDokterLogin
 	}
 
 	if err := s.repo.UpdatePenilaianMedisRanap(ctx, noRawat, req); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError("Data penilaian awal medis rawat inap tidak ditemukan")
+		}
 		s.log.Error("Gagal memperbarui penilaian medis ranap no_rawat %s oleh dokter %s: %v", noRawat, kodeDokterLogin, err)
 		return nil, err
 	}
@@ -102,6 +105,9 @@ func (s *service) HapusPenilaianMedisRanap(ctx context.Context, kodeDokterLogin,
 	}
 
 	if err := s.repo.HapusPenilaianMedisRanap(ctx, noRawat); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError("Data penilaian awal medis rawat inap tidak ditemukan")
+		}
 		s.log.Error("Gagal menghapus penilaian medis ranap no_rawat %s oleh dokter %s: %v", noRawat, kodeDokterLogin, err)
 		return err
 	}

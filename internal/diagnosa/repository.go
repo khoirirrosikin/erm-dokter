@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 )
 
@@ -370,14 +371,7 @@ func (r *repository) UpdateDiagnosa(ctx context.Context, noRawat, kode string, s
 	if err != nil {
 		return err
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return database.CheckRowsAffected(result)
 }
 
 func (r *repository) UpdateProsedur(ctx context.Context, noRawat, kode string, status shared.StatusLanjut, prioritas int) error {
@@ -386,14 +380,7 @@ func (r *repository) UpdateProsedur(ctx context.Context, noRawat, kode string, s
 	if err != nil {
 		return err
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return database.CheckRowsAffected(result)
 }
 
 func (r *repository) HapusDiagnosa(ctx context.Context, noRawat, kode string, status shared.StatusLanjut) error {
@@ -402,14 +389,7 @@ func (r *repository) HapusDiagnosa(ctx context.Context, noRawat, kode string, st
 	if err != nil {
 		return err
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return database.CheckRowsAffected(result)
 }
 
 func (r *repository) HapusProsedur(ctx context.Context, noRawat, kode string, status shared.StatusLanjut) error {
@@ -418,14 +398,7 @@ func (r *repository) HapusProsedur(ctx context.Context, noRawat, kode string, st
 	if err != nil {
 		return err
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return database.CheckRowsAffected(result)
 }
 
 func (r *repository) ReorderDiagnosa(ctx context.Context, noRawat string, status shared.StatusLanjut, items []ReorderItemRequest) error {
@@ -446,12 +419,8 @@ func (r *repository) ReorderDiagnosa(ctx context.Context, noRawat string, status
 		if err != nil {
 			return err
 		}
-		rowsAffected, err := res.RowsAffected()
-		if err != nil {
+		if err := database.CheckRowsAffected(res); err != nil {
 			return err
-		}
-		if rowsAffected == 0 {
-			return sql.ErrNoRows
 		}
 	}
 
@@ -476,12 +445,8 @@ func (r *repository) ReorderProsedur(ctx context.Context, noRawat string, status
 		if err != nil {
 			return err
 		}
-		rowsAffected, err := res.RowsAffected()
-		if err != nil {
+		if err := database.CheckRowsAffected(res); err != nil {
 			return err
-		}
-		if rowsAffected == 0 {
-			return sql.ErrNoRows
 		}
 	}
 

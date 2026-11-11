@@ -2,6 +2,7 @@ package pemeriksaan_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -1388,4 +1389,72 @@ func TestHapusPemeriksaan_CheckoutRanap(t *testing.T) {
 	if !errors.As(err, &bErr) {
 		t.Fatalf("expected *apperror.BusinessError, got %T (%v)", err, err)
 	}
+}
+
+func TestUpdateAndHapusPemeriksaan_ErrNoRowsMapsToNotFound(t *testing.T) {
+	now := time.Now()
+	id := pemeriksaan.IdPemeriksaan{
+		NoRawat:            "2026/04/22/036934",
+		TanggalPemeriksaan: now.Format("2006-01-02"),
+		JamPemeriksaan:     now.Format("15:04:05"),
+	}
+
+	detailExisting := func(ctx context.Context, id pemeriksaan.IdPemeriksaan, statusLanjut shared.StatusLanjut) (*pemeriksaan.Pemeriksaan, error) {
+		return &pemeriksaan.Pemeriksaan{
+			NoRawat: id.NoRawat,
+			DataPemeriksaan: pemeriksaan.DataPemeriksaan{
+				TanggalPemeriksaan: id.TanggalPemeriksaan,
+				JamPemeriksaan:     id.JamPemeriksaan,
+			},
+			KodeDokterPetugas: "DK001",
+			NamaDokterPetugas: "dr. Budi",
+			StatusLanjut:      shared.StatusLanjutRawatJalan,
+		}, nil
+	}
+
+	t.Run("UpdatePemeriksaan maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			detailPemeriksaanFunc: detailExisting,
+			updatePemeriksaanFunc: func(ctx context.Context, id pemeriksaan.IdPemeriksaan, statusLanjut shared.StatusLanjut, req pemeriksaan.UpdatePemeriksaanRequest) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := pemeriksaan.NewService(repo, &mockRawatJalanService{}, &mockRawatInapService{}, 48, logger.New())
+
+		req := pemeriksaan.UpdatePemeriksaanRequest{
+			DataPemeriksaan: pemeriksaan.DataPemeriksaan{
+				TanggalPemeriksaan:  id.TanggalPemeriksaan,
+				JamPemeriksaan:      id.JamPemeriksaan,
+				Kesadaran:           pemeriksaan.KesadaranComposMentis,
+				Keluhan:             "Keluhan",
+				Pemeriksaan:         "Pemeriksaan",
+				Penilaian:           "Penilaian",
+				RencanaTindakLanjut: "RTL",
+				Instruksi:           "Instruksi",
+				Evaluasi:            "Evaluasi",
+			},
+		}
+
+		_, err := svc.UpdatePemeriksaan(context.Background(), "DK001", id, shared.StatusLanjutRawatJalan, req)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("HapusPemeriksaan maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			detailPemeriksaanFunc: detailExisting,
+			hapusPemeriksaanFunc: func(ctx context.Context, id pemeriksaan.IdPemeriksaan, statusLanjut shared.StatusLanjut) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := pemeriksaan.NewService(repo, &mockRawatJalanService{}, &mockRawatInapService{}, 48, logger.New())
+
+		err := svc.HapusPemeriksaan(context.Background(), "DK001", id, shared.StatusLanjutRawatJalan)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
 }

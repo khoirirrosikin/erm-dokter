@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"erm-dokter/internal/pkg/database"
 )
 
 const selectPenilaianMedisRalanKandungan = `
@@ -307,15 +309,7 @@ func (r *repository) UpdatePenilaianMedisRalanKandungan(ctx context.Context, noR
 		return err
 	}
 
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
+	return database.CheckRowsAffected(res)
 }
 
 func (r *repository) HapusPenilaianMedisRalanKandungan(ctx context.Context, noRawat string) error {
@@ -325,13 +319,5 @@ func (r *repository) HapusPenilaianMedisRalanKandungan(ctx context.Context, noRa
 		return err
 	}
 
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
-	}
-
-	return nil
+	return database.CheckRowsAffected(res)
 }

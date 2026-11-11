@@ -3,6 +3,7 @@ package diagnosa
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -192,7 +193,7 @@ func (s *service) UpdateDiagnosa(ctx context.Context, id IdDiagnosa, req UpdateD
 
 	err := s.repo.UpdateDiagnosa(ctx, id.NoRawat, id.Kode, id.Status, req.Prioritas, req.StatusPenyakit)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return apperror.NewNotFoundError("Data diagnosa tidak ditemukan")
 		}
 		s.log.Error("Gagal update diagnosa no_rawat '%s', kode '%s': %v", id.NoRawat, id.Kode, err)
@@ -208,7 +209,7 @@ func (s *service) HapusDiagnosa(ctx context.Context, id IdDiagnosa) error {
 
 	err := s.repo.HapusDiagnosa(ctx, id.NoRawat, id.Kode, id.Status)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return apperror.NewNotFoundError("Data diagnosa tidak ditemukan")
 		}
 		s.log.Error("Gagal menghapus diagnosa no_rawat '%s', kode '%s': %v", id.NoRawat, id.Kode, err)
@@ -224,7 +225,7 @@ func (s *service) ReorderDiagnosa(ctx context.Context, noRawat string, status sh
 
 	err := s.repo.ReorderDiagnosa(ctx, noRawat, status, req.Items)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return apperror.NewNotFoundError("Salah satu item diagnosa dalam urutan tidak ditemukan")
 		}
 		s.log.Error("Gagal reorder diagnosa no_rawat '%s': %v", noRawat, err)
@@ -300,7 +301,7 @@ func (s *service) UpdateProsedur(ctx context.Context, id IdProsedur, req UpdateP
 
 	err := s.repo.UpdateProsedur(ctx, id.NoRawat, id.Kode, id.Status, *req.Prioritas)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return apperror.NewNotFoundError("Data prosedur tidak ditemukan")
 		}
 		s.log.Error("Gagal update prosedur no_rawat '%s', kode '%s': %v", id.NoRawat, id.Kode, err)
@@ -316,7 +317,7 @@ func (s *service) HapusProsedur(ctx context.Context, id IdProsedur) error {
 
 	err := s.repo.HapusProsedur(ctx, id.NoRawat, id.Kode, id.Status)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return apperror.NewNotFoundError("Data prosedur tidak ditemukan")
 		}
 		s.log.Error("Gagal menghapus prosedur no_rawat '%s', kode '%s': %v", id.NoRawat, id.Kode, err)
@@ -332,7 +333,7 @@ func (s *service) ReorderProsedur(ctx context.Context, noRawat string, status sh
 
 	err := s.repo.ReorderProsedur(ctx, noRawat, status, req.Items)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return apperror.NewNotFoundError("Salah satu item prosedur dalam urutan tidak ditemukan")
 		}
 		s.log.Error("Gagal reorder prosedur no_rawat '%s': %v", noRawat, err)

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared/formatter"
 )
 
@@ -636,10 +637,10 @@ func (r *repository) CekAksesKunjungan(ctx context.Context, noRawat string, kode
 
 func (r *repository) UpdateStatusPemeriksaan(ctx context.Context, noRawat string, status StatusPemeriksaan) error {
 	query := "UPDATE reg_periksa SET stts = ? WHERE no_rawat = ?"
-	_, err := r.db.ExecContext(ctx, query, string(status), noRawat)
+	res, err := r.db.ExecContext(ctx, query, string(status), noRawat)
 	if err != nil {
 		return fmt.Errorf("gagal update status pemeriksaan kunjungan: %w", err)
 	}
-	return nil
+	return database.CheckRowsAffected(res)
 }
 

@@ -75,6 +75,9 @@ func (s *service) UpdatePenilaianMedisRalanKandungan(ctx context.Context, kodeDo
 	}
 
 	if err := s.repo.UpdatePenilaianMedisRalanKandungan(ctx, noRawat, req); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError("Data penilaian awal medis rawat jalan kandungan tidak ditemukan")
+		}
 		s.log.Error("Gagal memperbarui penilaian medis ralan kandungan no_rawat %s oleh dokter %s: %v", noRawat, kodeDokterLogin, err)
 		return nil, err
 	}
@@ -102,6 +105,9 @@ func (s *service) HapusPenilaianMedisRalanKandungan(ctx context.Context, kodeDok
 	}
 
 	if err := s.repo.HapusPenilaianMedisRalanKandungan(ctx, noRawat); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError("Data penilaian awal medis rawat jalan kandungan tidak ditemukan")
+		}
 		s.log.Error("Gagal menghapus penilaian medis ralan kandungan no_rawat %s oleh dokter %s: %v", noRawat, kodeDokterLogin, err)
 		return err
 	}

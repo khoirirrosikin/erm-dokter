@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/formatter"
 )
@@ -731,7 +732,11 @@ func (r *repository) UpdatePermintaanRadiologi(ctx context.Context, noPermintaan
 		SET tgl_permintaan = ?, jam_permintaan = ?, informasi_tambahan = ?, diagnosa_klinis = ?
 		WHERE noorder = ?
 	`
-	if _, err := tx.ExecContext(ctx, updateHeaderQuery, req.TanggalPermintaan, req.JamPermintaan, req.InformasiTambahan, req.DiagnosaKlinis, noPermintaan); err != nil {
+	res, err := tx.ExecContext(ctx, updateHeaderQuery, req.TanggalPermintaan, req.JamPermintaan, req.InformasiTambahan, req.DiagnosaKlinis, noPermintaan)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 
@@ -765,7 +770,11 @@ func (r *repository) HapusPermintaanRadiologi(ctx context.Context, noPermintaan 
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM permintaan_radiologi WHERE noorder = ?`, noPermintaan); err != nil {
+	res, err := tx.ExecContext(ctx, `DELETE FROM permintaan_radiologi WHERE noorder = ?`, noPermintaan)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 

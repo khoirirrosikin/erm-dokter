@@ -758,3 +758,88 @@ func TestService_Referensi(t *testing.T) {
 		}
 	})
 }
+
+func TestService_UpdateAndHapusResumePasien_ErrNoRowsMapsToNotFound(t *testing.T) {
+	now := time.Now()
+	tglHariIni := now.Format("2006-01-02")
+	jamSekarang := now.Format("15:04:05")
+
+	t.Run("UpdateResumePasienRalan maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			detailData: &resumepasien.ResumePasienRalan{NoRawat: "2026/09/07/000001", KodeDokter: "DR01"},
+			updateErr:  sql.ErrNoRows,
+		}
+		ralanSvc := &mockRawatJalanService{tglReg: tglHariIni, jamReg: jamSekarang, exists: true}
+		svc := setupTestService(repo, ralanSvc, &mockRawatInapService{})
+
+		_, err := svc.UpdateResumePasienRalan(context.Background(), "DR01", "2026/09/07/000001", resumepasien.UpdateResumePasienRalanRequest{
+			DataResumePasienRalan: resumepasien.DataResumePasienRalan{
+				KeluhanUtama:  "Keluhan",
+				DiagnosaUtama: "Diagnosa",
+				KeadaanPulang: resumepasien.KeadaanPulangHidup,
+			},
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("HapusResumePasienRalan maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			detailData: &resumepasien.ResumePasienRalan{NoRawat: "2026/09/07/000001", KodeDokter: "DR01"},
+			hapusErr:   sql.ErrNoRows,
+		}
+		ralanSvc := &mockRawatJalanService{tglReg: tglHariIni, jamReg: jamSekarang, exists: true}
+		svc := setupTestService(repo, ralanSvc, &mockRawatInapService{})
+
+		err := svc.HapusResumePasienRalan(context.Background(), "DR01", "2026/09/07/000001")
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("UpdateResumePasienRanap maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			detailRanapData: &resumepasien.ResumePasienRanap{NoRawat: "2026/09/07/000002", KodeDokter: "DR01"},
+			updateRanapErr:  sql.ErrNoRows,
+		}
+		ralanSvc := &mockRawatJalanService{exists: true}
+		ranapSvc := &mockRawatInapService{hasRecordKamar: true}
+		svc := setupTestService(repo, ralanSvc, ranapSvc)
+
+		_, err := svc.UpdateResumePasienRanap(context.Background(), "DR01", "2026/09/07/000002", resumepasien.UpdateResumePasienRanapRequest{
+			DataResumePasienRanap: resumepasien.DataResumePasienRanap{
+				DiagnosaAwal:  "Chest Pain",
+				AlasanRawat:   "Evaluasi nyeri dada",
+				KeluhanUtama:  "Nyeri dada berkurang",
+				DiagnosaUtama: "STEMI Anterior Resolving",
+				CaraKeluar:    resumepasien.CaraKeluarAtasIzinDokter,
+				KeadaanPulang: resumepasien.KeadaanPulangSembuh,
+				Dilanjutkan:   resumepasien.DilanjutkanKembaliKeRS,
+				WaktuKontrol:  "2026-09-12 09:00:00",
+			},
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("HapusResumePasienRanap maps sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		repo := &mockRepository{
+			detailRanapData: &resumepasien.ResumePasienRanap{NoRawat: "2026/09/07/000002", KodeDokter: "DR01"},
+			hapusRanapErr:   sql.ErrNoRows,
+		}
+		ralanSvc := &mockRawatJalanService{exists: true}
+		ranapSvc := &mockRawatInapService{hasRecordKamar: true}
+		svc := setupTestService(repo, ralanSvc, ranapSvc)
+
+		err := svc.HapusResumePasienRanap(context.Background(), "DR01", "2026/09/07/000002")
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+}

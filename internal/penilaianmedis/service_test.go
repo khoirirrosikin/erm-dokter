@@ -2123,3 +2123,100 @@ func TestService_ValidasiKepemilikanDokter_StandardizedMessage(t *testing.T) {
 		}
 	})
 }
+
+func TestService_UpdateAndHapus_ErrNoRowsMapsToNotFound(t *testing.T) {
+	log := logger.New()
+	today := time.Now().Format("2006-01-02")
+	rjSvc := &mockRawatJalanService{tglReg: today, jamReg: "08:00:00", exists: true}
+	riSvc := &mockRawatInapService{
+		cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+			return true, true, nil
+		},
+	}
+
+	assertNotFound := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("expected NotFoundError, got nil")
+		}
+		var nfErr *apperror.NotFoundError
+		if !errors.As(err, &nfErr) {
+			t.Fatalf("expected *apperror.NotFoundError, got %T: %v", err, err)
+		}
+	}
+
+	t.Run("Ralan Update and Hapus", func(t *testing.T) {
+		repo := &mockRepository{
+			detailData: &PenilaianMedisRalan{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			updateErr:  sql.ErrNoRows,
+			hapusErr:   sql.ErrNoRows,
+		}
+		svc := NewService(repo, rjSvc, &mockRawatInapService{}, 48, log)
+
+		_, err := svc.UpdatePenilaianMedisRalan(context.Background(), "DR001", "2026/04/22/000001", UpdatePenilaianMedisRalanRequest{})
+		assertNotFound(t, err)
+
+		err = svc.HapusPenilaianMedisRalan(context.Background(), "DR001", "2026/04/22/000001")
+		assertNotFound(t, err)
+	})
+
+	t.Run("IGD Update and Hapus", func(t *testing.T) {
+		repo := &mockRepository{
+			detailIGDData: &PenilaianMedisIGD{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			updateIGDErr:  sql.ErrNoRows,
+			hapusIGDErr:   sql.ErrNoRows,
+		}
+		svc := NewService(repo, rjSvc, &mockRawatInapService{}, 48, log)
+
+		_, err := svc.UpdatePenilaianMedisIGD(context.Background(), "DR001", "2026/04/22/000001", UpdatePenilaianMedisIGDRequest{})
+		assertNotFound(t, err)
+
+		err = svc.HapusPenilaianMedisIGD(context.Background(), "DR001", "2026/04/22/000001")
+		assertNotFound(t, err)
+	})
+
+	t.Run("Ranap Update and Hapus", func(t *testing.T) {
+		repo := &mockRepository{
+			detailRanapData: &PenilaianMedisRanap{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			updateRanapErr:  sql.ErrNoRows,
+			hapusRanapErr:   sql.ErrNoRows,
+		}
+		svc := NewService(repo, rjSvc, riSvc, 48, log)
+
+		_, err := svc.UpdatePenilaianMedisRanap(context.Background(), "DR001", "2026/04/22/000001", UpdatePenilaianMedisRanapRequest{})
+		assertNotFound(t, err)
+
+		err = svc.HapusPenilaianMedisRanap(context.Background(), "DR001", "2026/04/22/000001")
+		assertNotFound(t, err)
+	})
+
+	t.Run("RalanKandungan Update and Hapus", func(t *testing.T) {
+		repo := &mockRepository{
+			detailRalanKandunganData: &PenilaianMedisRalanKandungan{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			updateRalanKandunganErr:  sql.ErrNoRows,
+			hapusRalanKandunganErr:   sql.ErrNoRows,
+		}
+		svc := NewService(repo, rjSvc, &mockRawatInapService{}, 48, log)
+
+		_, err := svc.UpdatePenilaianMedisRalanKandungan(context.Background(), "DR001", "2026/04/22/000001", UpdatePenilaianMedisRalanKandunganRequest{})
+		assertNotFound(t, err)
+
+		err = svc.HapusPenilaianMedisRalanKandungan(context.Background(), "DR001", "2026/04/22/000001")
+		assertNotFound(t, err)
+	})
+
+	t.Run("RanapKandungan Update and Hapus", func(t *testing.T) {
+		repo := &mockRepository{
+			detailRanapKandunganData: &PenilaianMedisRanapKandungan{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			updateRanapKandunganErr:  sql.ErrNoRows,
+			hapusRanapKandunganErr:   sql.ErrNoRows,
+		}
+		svc := NewService(repo, rjSvc, riSvc, 48, log)
+
+		_, err := svc.UpdatePenilaianMedisRanapKandungan(context.Background(), "DR001", "2026/04/22/000001", UpdatePenilaianMedisRanapKandunganRequest{})
+		assertNotFound(t, err)
+
+		err = svc.HapusPenilaianMedisRanapKandungan(context.Background(), "DR001", "2026/04/22/000001")
+		assertNotFound(t, err)
+	})
+}

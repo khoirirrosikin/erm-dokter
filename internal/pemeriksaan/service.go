@@ -2,6 +2,7 @@ package pemeriksaan
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -162,6 +163,12 @@ func (s *service) UpdatePemeriksaan(ctx context.Context, kodeDokter string, id I
 	}
 
 	if err := s.repo.UpdatePemeriksaan(ctx, id, statusLanjut, req); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError(
+				"Data pemeriksaan tidak ditemukan",
+				fmt.Sprintf("Data pemeriksaan tidak ditemukan untuk no_rawat '%s' tanggal '%s' jam '%s' (%s)", id.NoRawat, id.TanggalPemeriksaan, id.JamPemeriksaan, statusLanjut),
+			)
+		}
 		if isDuplicateEntry(err) {
 			return nil, apperror.ValidationError{
 				"jam_pemeriksaan": fmt.Sprintf("Pemeriksaan pada %s %s sudah ada", req.TanggalPemeriksaan, req.JamPemeriksaan),
@@ -201,6 +208,12 @@ func (s *service) HapusPemeriksaan(ctx context.Context, kodeDokter string, id Id
 	}
 
 	if err := s.repo.HapusPemeriksaan(ctx, id, statusLanjut); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError(
+				"Data pemeriksaan tidak ditemukan",
+				fmt.Sprintf("Data pemeriksaan tidak ditemukan untuk no_rawat '%s' tanggal '%s' jam '%s' (%s)", id.NoRawat, id.TanggalPemeriksaan, id.JamPemeriksaan, statusLanjut),
+			)
+		}
 		s.log.Error("Gagal menghapus data pemeriksaan no_rawat '%s' (%s) oleh dokter '%s': %v", id.NoRawat, statusLanjut, kodeDokter, err)
 		return err
 	}

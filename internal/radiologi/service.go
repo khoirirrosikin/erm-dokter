@@ -2,6 +2,8 @@ package radiologi
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -174,13 +176,18 @@ func (s *service) UpdatePermintaanRadiologi(ctx context.Context, kodeDokter, noR
 	}
 
 	if err := s.repo.UpdatePermintaanRadiologi(ctx, noPermintaan, req, kodeTindakanList); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError(
+				"Data permintaan radiologi tidak ditemukan",
+				fmt.Sprintf("Data permintaan radiologi no_permintaan '%s' tidak ditemukan di database", noPermintaan),
+			)
+		}
 		s.log.Error("Gagal memperbarui permintaan radiologi no_permintaan '%s' untuk no_rawat '%s' (%s) oleh dokter '%s': %v", noPermintaan, noRawat, statusLanjut, kodeDokter, err)
 		return nil, err
 	}
 
-	updatedDetail, err := s.repo.DetailPermintaanRadiologi(ctx, noPermintaan)
+	updatedDetail, err := s.DetailPermintaanRadiologi(ctx, noPermintaan)
 	if err != nil {
-		s.log.Error("Gagal mengambil detail setelah update permintaan radiologi no_permintaan '%s': %v", noPermintaan, err)
 		return nil, err
 	}
 
@@ -212,6 +219,12 @@ func (s *service) HapusPermintaanRadiologi(ctx context.Context, kodeDokter, noRa
 	}
 
 	if err := s.repo.HapusPermintaanRadiologi(ctx, noPermintaan); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError(
+				"Data permintaan radiologi tidak ditemukan",
+				fmt.Sprintf("Data permintaan radiologi no_permintaan '%s' tidak ditemukan di database", noPermintaan),
+			)
+		}
 		s.log.Error("Gagal menghapus permintaan radiologi no_permintaan '%s' untuk no_rawat '%s' oleh dokter '%s': %v", noPermintaan, noRawat, kodeDokter, err)
 		return err
 	}
