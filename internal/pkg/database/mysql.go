@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -35,6 +36,20 @@ func GetTrackerHook() *TrackerHook {
 	return trackerHook
 }
 
+func buildDSN(host, port, user, password, dbname string) string {
+	cfg := mysqlDriver.NewConfig()
+	cfg.User = user
+	cfg.Passwd = password
+	cfg.Net = "tcp"
+	cfg.Addr = net.JoinHostPort(host, port)
+	cfg.DBName = dbname
+	cfg.Timeout = 5 * time.Second
+	cfg.ClientFoundRows = true
+	cfg.ParseTime = false
+	cfg.Loc = time.Local
+	return cfg.FormatDSN()
+}
+
 func InitMySQL(host, port, user, password, dbname string, loggers ...*logger.Logger) (*sql.DB, error) {
 	var log *logger.Logger
 	if len(loggers) > 0 {
@@ -43,16 +58,11 @@ func InitMySQL(host, port, user, password, dbname string, loggers ...*logger.Log
 
 	initDriver(log)
 
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&timeout=5s",
-		user, password, host, port, dbname)
+	dsn := buildDSN(host, port, user, password, dbname)
 
 	db, err := sql.Open(DriverNameWithTracker, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("gagal membuka koneksi database: %w", err)
-	}
-
-	if trackerHook != nil {
-		trackerHook.SetDB(db)
 	}
 
 	db.SetMaxOpenConns(40)
@@ -60,8 +70,24 @@ func InitMySQL(host, port, user, password, dbname string, loggers ...*logger.Log
 	db.SetConnMaxLifetime(10 * time.Minute)
 	db.SetConnMaxIdleTime(2 * time.Minute)
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("gagal ping ke database MySQL: %w", err)
 	}
 
+	if trackerHook != nil {
+		trackerHook.SetDB(db)
+	}
+
 	return db, nil
+}
+
+func CheckRowsAffected(res sql.Result) error {
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
