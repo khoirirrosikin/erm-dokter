@@ -176,7 +176,8 @@ func (h *Handler) UpdateDiagnosa(w http.ResponseWriter, r *http.Request) {
 	idKunjungan := r.PathValue("id_kunjungan")
 	encryptedId := r.PathValue("id")
 
-	if _, ok := shared.ParseStatusLanjut(statusLanjut); !ok {
+	status, ok := shared.ParseStatusLanjut(statusLanjut)
+	if !ok {
 		apperror.HandleError(w, apperror.NewBusinessError("Status lanjut tidak valid"))
 		return
 	}
@@ -201,6 +202,11 @@ func (h *Handler) UpdateDiagnosa(w http.ResponseWriter, r *http.Request) {
 
 	if idDiagnosa.NoRawat != noRawat {
 		apperror.HandleError(w, apperror.NewBusinessError("ID diagnosa tidak sesuai dengan ID kunjungan"))
+		return
+	}
+
+	if idDiagnosa.Status != status {
+		apperror.HandleError(w, apperror.NewBusinessError("Status ID diagnosa tidak sesuai dengan status lanjut kunjungan"))
 		return
 	}
 
@@ -229,7 +235,8 @@ func (h *Handler) HapusDiagnosa(w http.ResponseWriter, r *http.Request) {
 	idKunjungan := r.PathValue("id_kunjungan")
 	encryptedId := r.PathValue("id")
 
-	if _, ok := shared.ParseStatusLanjut(statusLanjut); !ok {
+	status, ok := shared.ParseStatusLanjut(statusLanjut)
+	if !ok {
 		apperror.HandleError(w, apperror.NewBusinessError("Status lanjut tidak valid"))
 		return
 	}
@@ -257,12 +264,72 @@ func (h *Handler) HapusDiagnosa(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if idDiagnosa.Status != status {
+		apperror.HandleError(w, apperror.NewBusinessError("Status ID diagnosa tidak sesuai dengan status lanjut kunjungan"))
+		return
+	}
+
 	if err := h.service.HapusDiagnosa(r.Context(), idDiagnosa); err != nil {
 		apperror.HandleError(w, err)
 		return
 	}
 
 	response.Success(w, "Berhasil menghapus data diagnosa", nil)
+}
+
+func (h *Handler) resolveReorderItems(items []ReorderItemRequest, noRawat string, status shared.StatusLanjut, isProsedur bool) error {
+	label := "diagnosa"
+	if isProsedur {
+		label = "prosedur"
+	}
+
+	seenKode := make(map[string]bool, len(items))
+	for i := range items {
+		if items[i].Id != "" {
+			decryptedId, err := crypto.Decrypt(items[i].Id, h.encryptionKey)
+			if err != nil {
+				return apperror.NewBusinessError("ID " + label + " tidak valid")
+			}
+
+			var parsedNoRawat, parsedKode string
+			var parsedStatus shared.StatusLanjut
+			if isProsedur {
+				idProsedur, err := ParseIdProsedur(decryptedId)
+				if err != nil {
+					return apperror.NewBusinessError(err.Error())
+				}
+				parsedNoRawat, parsedKode, parsedStatus = idProsedur.NoRawat, idProsedur.Kode, idProsedur.Status
+			} else {
+				idDiagnosa, err := ParseIdDiagnosa(decryptedId)
+				if err != nil {
+					return apperror.NewBusinessError(err.Error())
+				}
+				parsedNoRawat, parsedKode, parsedStatus = idDiagnosa.NoRawat, idDiagnosa.Kode, idDiagnosa.Status
+			}
+
+			if parsedNoRawat != noRawat {
+				return apperror.NewBusinessError("ID " + label + " tidak sesuai dengan ID kunjungan")
+			}
+			if parsedStatus != status {
+				return apperror.NewBusinessError("Status ID " + label + " tidak sesuai dengan status lanjut kunjungan")
+			}
+			if items[i].Kode != "" && items[i].Kode != parsedKode {
+				return apperror.ValidationError{
+					"items": "Kode tidak sesuai dengan ID " + label + " pada urutan item",
+				}
+			}
+			items[i].Kode = parsedKode
+		}
+
+		if seenKode[items[i].Kode] {
+			return apperror.ValidationError{
+				"items": "Item '" + items[i].Kode + "' duplikat dalam urutan",
+			}
+		}
+		seenKode[items[i].Kode] = true
+	}
+
+	return nil
 }
 
 func (h *Handler) ReorderDiagnosa(w http.ResponseWriter, r *http.Request) {
@@ -290,6 +357,11 @@ func (h *Handler) ReorderDiagnosa(w http.ResponseWriter, r *http.Request) {
 	req.Sanitize()
 	if errs := req.Validate(); errs != nil {
 		apperror.HandleError(w, errs)
+		return
+	}
+
+	if err := h.resolveReorderItems(req.Items, noRawat, status, false); err != nil {
+		apperror.HandleError(w, err)
 		return
 	}
 
@@ -350,7 +422,8 @@ func (h *Handler) UpdateProsedur(w http.ResponseWriter, r *http.Request) {
 	idKunjungan := r.PathValue("id_kunjungan")
 	encryptedId := r.PathValue("id")
 
-	if _, ok := shared.ParseStatusLanjut(statusLanjut); !ok {
+	status, ok := shared.ParseStatusLanjut(statusLanjut)
+	if !ok {
 		apperror.HandleError(w, apperror.NewBusinessError("Status lanjut tidak valid"))
 		return
 	}
@@ -375,6 +448,11 @@ func (h *Handler) UpdateProsedur(w http.ResponseWriter, r *http.Request) {
 
 	if idProsedur.NoRawat != noRawat {
 		apperror.HandleError(w, apperror.NewBusinessError("ID prosedur tidak sesuai dengan ID kunjungan"))
+		return
+	}
+
+	if idProsedur.Status != status {
+		apperror.HandleError(w, apperror.NewBusinessError("Status ID prosedur tidak sesuai dengan status lanjut kunjungan"))
 		return
 	}
 
@@ -403,7 +481,8 @@ func (h *Handler) HapusProsedur(w http.ResponseWriter, r *http.Request) {
 	idKunjungan := r.PathValue("id_kunjungan")
 	encryptedId := r.PathValue("id")
 
-	if _, ok := shared.ParseStatusLanjut(statusLanjut); !ok {
+	status, ok := shared.ParseStatusLanjut(statusLanjut)
+	if !ok {
 		apperror.HandleError(w, apperror.NewBusinessError("Status lanjut tidak valid"))
 		return
 	}
@@ -428,6 +507,11 @@ func (h *Handler) HapusProsedur(w http.ResponseWriter, r *http.Request) {
 
 	if idProsedur.NoRawat != noRawat {
 		apperror.HandleError(w, apperror.NewBusinessError("ID prosedur tidak sesuai dengan ID kunjungan"))
+		return
+	}
+
+	if idProsedur.Status != status {
+		apperror.HandleError(w, apperror.NewBusinessError("Status ID prosedur tidak sesuai dengan status lanjut kunjungan"))
 		return
 	}
 
@@ -464,6 +548,11 @@ func (h *Handler) ReorderProsedur(w http.ResponseWriter, r *http.Request) {
 	req.Sanitize()
 	if errs := req.Validate(); errs != nil {
 		apperror.HandleError(w, errs)
+		return
+	}
+
+	if err := h.resolveReorderItems(req.Items, noRawat, status, true); err != nil {
+		apperror.HandleError(w, err)
 		return
 	}
 

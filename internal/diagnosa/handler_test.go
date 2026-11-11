@@ -357,11 +357,15 @@ func TestHandler_HapusDiagnosa(t *testing.T) {
 }
 
 func TestHandler_ReorderDiagnosa(t *testing.T) {
-	encKunjungan, _ := crypto.Encrypt("2026/09/17/000001", testEncKey)
+	noRawat := "2026/09/17/000001"
+	encKunjungan, _ := crypto.Encrypt(noRawat, testEncKey)
 
-	t.Run("Sukses reorder diagnosa", func(t *testing.T) {
+	t.Run("Sukses reorder diagnosa dengan kode (kontrak FE)", func(t *testing.T) {
 		svc := &mockService{
-			reorderDiagnosaFunc: func(ctx context.Context, noRawat string, status shared.StatusLanjut, req diagnosa.ReorderRequest) error {
+			reorderDiagnosaFunc: func(ctx context.Context, gotNoRawat string, status shared.StatusLanjut, req diagnosa.ReorderRequest) error {
+				if len(req.Items) != 2 || req.Items[0].Kode != "I63.9" || req.Items[1].Kode != "I10" {
+					t.Fatalf("unexpected items: %+v", req.Items)
+				}
 				return nil
 			},
 		}
@@ -374,6 +378,55 @@ func TestHandler_ReorderDiagnosa(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("Expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("Sukses reorder diagnosa dengan id terenkripsi", func(t *testing.T) {
+		encId1, _ := crypto.Encrypt(noRawat+"~I63.9~Ralan", testEncKey)
+		encId2, _ := crypto.Encrypt(noRawat+"~I10~Ralan", testEncKey)
+
+		svc := &mockService{
+			reorderDiagnosaFunc: func(ctx context.Context, gotNoRawat string, status shared.StatusLanjut, req diagnosa.ReorderRequest) error {
+				if len(req.Items) != 2 || req.Items[0].Kode != "I63.9" || req.Items[1].Kode != "I10" {
+					t.Fatalf("expected decrypted kode I63.9 and I10, got %+v", req.Items)
+				}
+				return nil
+			},
+		}
+
+		mux := setupTestServer(svc)
+		body := bytes.NewBufferString(fmt.Sprintf(`{"items":[{"id":%q,"prioritas":1},{"id":%q,"prioritas":2}]}`, encId1, encId2))
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/diagnosa/ralan/"+encKunjungan+"/reorder", body)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("Gagal jika prioritas duplikat", func(t *testing.T) {
+		mux := setupTestServer(&mockService{})
+		body := bytes.NewBufferString(`{"items":[{"kode":"I63.9","prioritas":1},{"kode":"I10","prioritas":1}]}`)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/diagnosa/ralan/"+encKunjungan+"/reorder", body)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("Expected status 400, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("Gagal jika id berasal dari status lanjut berbeda", func(t *testing.T) {
+		encIdRanap, _ := crypto.Encrypt(noRawat+"~I63.9~Ranap", testEncKey)
+		mux := setupTestServer(&mockService{})
+		body := bytes.NewBufferString(fmt.Sprintf(`{"items":[{"id":%q,"prioritas":1}]}`, encIdRanap))
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/diagnosa/ralan/"+encKunjungan+"/reorder", body)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("Expected status 400, got %d. Body: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -446,12 +499,36 @@ func TestHandler_ProsedurCRUD(t *testing.T) {
 	t.Run("Sukses reorder prosedur", func(t *testing.T) {
 		svc := &mockService{
 			reorderProsedurFunc: func(ctx context.Context, noRawat string, status shared.StatusLanjut, req diagnosa.ReorderRequest) error {
+				if len(req.Items) != 1 || req.Items[0].Kode != "87.03" {
+					t.Fatalf("unexpected items: %+v", req.Items)
+				}
 				return nil
 			},
 		}
 
 		mux := setupTestServer(svc)
 		body := bytes.NewBufferString(`{"items":[{"kode":"87.03","prioritas":1}]}`)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/prosedur/ralan/"+encKunjungan+"/reorder", body)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d. Body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("Sukses reorder prosedur dengan id terenkripsi", func(t *testing.T) {
+		svc := &mockService{
+			reorderProsedurFunc: func(ctx context.Context, noRawat string, status shared.StatusLanjut, req diagnosa.ReorderRequest) error {
+				if len(req.Items) != 1 || req.Items[0].Kode != kode {
+					t.Fatalf("expected decrypted kode %q, got %+v", kode, req.Items)
+				}
+				return nil
+			},
+		}
+
+		mux := setupTestServer(svc)
+		body := bytes.NewBufferString(fmt.Sprintf(`{"items":[{"id":%q,"prioritas":1}]}`, encId))
 		req := httptest.NewRequest(http.MethodPut, "/api/v1/prosedur/ralan/"+encKunjungan+"/reorder", body)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)

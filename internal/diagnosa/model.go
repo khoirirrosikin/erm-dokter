@@ -252,6 +252,7 @@ func (r *ReorderRequest) Validate() apperror.ValidationError {
 	}
 
 	seenKey := make(map[string]bool)
+	seenPrioritas := make(map[int]bool)
 	for i, item := range r.Items {
 		key := item.Kode
 		if key == "" {
@@ -262,6 +263,10 @@ func (r *ReorderRequest) Validate() apperror.ValidationError {
 		}
 		if item.Prioritas < 1 {
 			errs[fmt.Sprintf("items[%d].prioritas", i)] = "Prioritas minimal 1"
+		} else if seenPrioritas[item.Prioritas] {
+			errs[fmt.Sprintf("items[%d].prioritas", i)] = fmt.Sprintf("Prioritas %d duplikat dalam urutan", item.Prioritas)
+		} else {
+			seenPrioritas[item.Prioritas] = true
 		}
 		if key != "" && seenKey[key] {
 			errs[fmt.Sprintf("items[%d]", i)] = fmt.Sprintf("Item '%s' duplikat dalam urutan", key)
