@@ -1836,3 +1836,137 @@ func TestService_UpdatePermintaanLabMB_Success(t *testing.T) {
 		t.Errorf("Expected result with NoPermintaan MB001, got %+v", res)
 	}
 }
+
+func TestService_UpdateAndHapusPermintaanLab_ErrNoRowsMapsToNotFound(t *testing.T) {
+	log := logger.New()
+	mockBerkas := &mockBerkasService{}
+	mockRawatJalan := &mockRawatJalanService{}
+	mockRawatInap := &mockRawatInapService{}
+	mockTindakan := &mockTindakanService{}
+
+	nowStr := time.Now().Format("2006-01-02")
+	jamNowStr := time.Now().Format("15:04:05")
+	noRawat := "2026/09/04/000001"
+
+	baseHeader := func(noPermintaan string) laboratorium.PermintaanLabHeader {
+		return laboratorium.PermintaanLabHeader{
+			NoPermintaan:      noPermintaan,
+			NoRawat:           noRawat,
+			KodeDokterPerujuk: "DR01",
+			TanggalSampel:     "0000-00-00",
+			TanggalHasil:      "0000-00-00",
+			Status:            "ralan",
+		}
+	}
+
+	t.Run("PK Update & Hapus map sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabPK, error) {
+				return &laboratorium.DetailPermintaanLabPK{
+					PermintaanLabPK: laboratorium.PermintaanLabPK{PermintaanLabHeader: baseHeader(noPermintaan)},
+				}, nil
+			},
+			updatePermintaanLabPKFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabPKRequest, kodeTindakanList []string, templateMap map[string][]int) error {
+				return sql.ErrNoRows
+			},
+			hapusPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+		_, err := svc.UpdatePermintaanLabPK(context.Background(), "DR01", noRawat, "PK001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPKRequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+				NoRawat:           noRawat,
+				TanggalPermintaan: nowStr,
+				JamPermintaan:     jamNowStr,
+				DiagnosaKlinis:    "Febris",
+			},
+			Pemeriksaan: []laboratorium.ItemPemeriksaanLabPKRequest{{KodeTindakan: "PK001"}},
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError on UpdatePermintaanLabPK, got %T (%v)", err, err)
+		}
+
+		notFound = nil
+		err = svc.HapusPermintaanLabPK(context.Background(), noRawat, "PK001", shared.StatusLanjutRawatJalan, "DR01")
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError on HapusPermintaanLabPK, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("PA Update & Hapus map sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailPermintaanLabPAFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabPA, error) {
+				return &laboratorium.DetailPermintaanLabPA{
+					PermintaanLabPA: laboratorium.PermintaanLabPA{PermintaanLabHeader: baseHeader(noPermintaan)},
+				}, nil
+			},
+			updatePermintaanLabPAFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabPARequest, kodeTindakanList []string) error {
+				return sql.ErrNoRows
+			},
+			hapusPermintaanLabPAFn: func(ctx context.Context, noPermintaan string) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+		_, err := svc.UpdatePermintaanLabPA(context.Background(), "DR01", noRawat, "PA001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPARequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+				NoRawat:           noRawat,
+				TanggalPermintaan: nowStr,
+				JamPermintaan:     jamNowStr,
+				DiagnosaKlinis:    "Tumor Mammae",
+			},
+			Pemeriksaan: []laboratorium.ItemPemeriksaanLabPARequest{{KodeTindakan: "PA001"}},
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError on UpdatePermintaanLabPA, got %T (%v)", err, err)
+		}
+
+		notFound = nil
+		err = svc.HapusPermintaanLabPA(context.Background(), noRawat, "PA001", shared.StatusLanjutRawatJalan, "DR01")
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError on HapusPermintaanLabPA, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("MB Update & Hapus map sql.ErrNoRows to NotFoundError", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailPermintaanLabMBFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabMB, error) {
+				return &laboratorium.DetailPermintaanLabMB{
+					PermintaanLabMB: laboratorium.PermintaanLabMB{PermintaanLabHeader: baseHeader(noPermintaan)},
+				}, nil
+			},
+			updatePermintaanLabMBFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabMBRequest, kodeTindakanList []string, templateMap map[string][]int) error {
+				return sql.ErrNoRows
+			},
+			hapusPermintaanLabMBFn: func(ctx context.Context, noPermintaan string) error {
+				return sql.ErrNoRows
+			},
+		}
+		svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+		_, err := svc.UpdatePermintaanLabMB(context.Background(), "DR01", noRawat, "MB001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabMBRequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+				NoRawat:           noRawat,
+				TanggalPermintaan: nowStr,
+				JamPermintaan:     jamNowStr,
+				DiagnosaKlinis:    "Sepsis",
+			},
+			Pemeriksaan: []laboratorium.ItemPemeriksaanLabMBRequest{{KodeTindakan: "MB001"}},
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError on UpdatePermintaanLabMB, got %T (%v)", err, err)
+		}
+
+		notFound = nil
+		err = svc.HapusPermintaanLabMB(context.Background(), noRawat, "MB001", shared.StatusLanjutRawatJalan, "DR01")
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected *apperror.NotFoundError on HapusPermintaanLabMB, got %T (%v)", err, err)
+		}
+	})
+}

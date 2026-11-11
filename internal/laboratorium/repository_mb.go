@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/formatter"
 )
@@ -71,7 +72,7 @@ func (r *repository) queryRiwayatLabMB(ctx context.Context, whereClause string, 
 			COALESCE(jpl.nm_perawatan, pl.kd_jenis_prw) AS nama_tindakan,
 			pl.kategori,
 			pl.status,
-			pl.tgl_periksa,
+			COALESCE(DATE_FORMAT(pl.tgl_periksa, '%%Y-%%m-%%d'), '') AS tgl_periksa,
 			pl.jam AS jam_periksa,
 			pl.dokter_perujuk AS kd_dokter_perujuk,
 			COALESCE(d_perujuk.nm_dokter, '-') AS nm_dokter_perujuk,
@@ -138,7 +139,7 @@ func (r *repository) DetailHasilLabMB(ctx context.Context, noRawat string, kodeT
 			COALESCE(jpl.nm_perawatan, pl.kd_jenis_prw) AS nama_tindakan,
 			pl.kategori,
 			pl.status,
-			pl.tgl_periksa,
+			COALESCE(DATE_FORMAT(pl.tgl_periksa, '%Y-%m-%d'), '') AS tgl_periksa,
 			pl.jam AS jam_periksa,
 			pl.dokter_perujuk AS kd_dokter_perujuk,
 			COALESCE(d_perujuk.nm_dokter, '-') AS nm_dokter_perujuk,
@@ -588,7 +589,11 @@ func (r *repository) UpdatePermintaanLabMB(ctx context.Context, noPermintaan str
 		SET tgl_permintaan = ?, jam_permintaan = ?, informasi_tambahan = ?, diagnosa_klinis = ?
 		WHERE noorder = ?
 	`
-	if _, err := tx.ExecContext(ctx, updateHeaderQuery, req.TanggalPermintaan, req.JamPermintaan, req.InformasiTambahan, req.DiagnosaKlinis, noPermintaan); err != nil {
+	res, err := tx.ExecContext(ctx, updateHeaderQuery, req.TanggalPermintaan, req.JamPermintaan, req.InformasiTambahan, req.DiagnosaKlinis, noPermintaan)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 
@@ -634,19 +639,21 @@ func (r *repository) HapusPermintaanLabMB(ctx context.Context, noPermintaan stri
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM permintaan_detail_permintaan_labmb WHERE noorder = ?`, noPermintaan); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM permintaan_pemeriksaan_labmb WHERE noorder = ?`, noPermintaan); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM permintaan_labmb WHERE noorder = ?`, noPermintaan); err != nil {
-		_ = tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM permintaan_labmb WHERE noorder = ?`, noPermintaan)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 

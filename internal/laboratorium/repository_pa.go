@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/formatter"
 )
@@ -71,7 +72,7 @@ func (r *repository) queryRiwayatLabPA(ctx context.Context, whereClause string, 
 			COALESCE(jpl.nm_perawatan, pl.kd_jenis_prw) AS nama_tindakan,
 			pl.kategori,
 			pl.status,
-			pl.tgl_periksa,
+			COALESCE(DATE_FORMAT(pl.tgl_periksa, '%%Y-%%m-%%d'), '') AS tgl_periksa,
 			pl.jam AS jam_periksa,
 			pl.dokter_perujuk AS kd_dokter_perujuk,
 			COALESCE(d_perujuk.nm_dokter, '-') AS nm_dokter_perujuk,
@@ -143,7 +144,7 @@ func (r *repository) DetailHasilLabPA(ctx context.Context, noRawat string, kodeT
 			COALESCE(jpl.nm_perawatan, pl.kd_jenis_prw) AS nama_tindakan,
 			pl.kategori,
 			pl.status,
-			pl.tgl_periksa,
+			COALESCE(DATE_FORMAT(pl.tgl_periksa, '%Y-%m-%d'), '') AS tgl_periksa,
 			pl.jam AS jam_periksa,
 			pl.dokter_perujuk AS kd_dokter_perujuk,
 			COALESCE(d_perujuk.nm_dokter, '-') AS nm_dokter_perujuk,
@@ -386,12 +387,12 @@ func (r *repository) DaftarPermintaanLabPA(ctx context.Context, noRawat string, 
 			pl.status,
 			pl.informasi_tambahan,
 			pl.diagnosa_klinis,
-			COALESCE(pl.pengambilan_bahan, '') AS pengambilan_bahan,
+			COALESCE(DATE_FORMAT(pl.pengambilan_bahan, '%%Y-%%m-%%d'), '') AS pengambilan_bahan,
 			COALESCE(pl.diperoleh_dengan, '') AS diperoleh_dengan,
 			COALESCE(pl.lokasi_jaringan, '') AS lokasi_jaringan,
 			COALESCE(pl.diawetkan_dengan, '') AS diawetkan_dengan,
 			COALESCE(pl.pernah_dilakukan_di, '') AS pernah_dilakukan_di,
-			COALESCE(pl.tanggal_pa_sebelumnya, '') AS tanggal_pa_sebelumnya,
+			COALESCE(DATE_FORMAT(pl.tanggal_pa_sebelumnya, '%%Y-%%m-%%d'), '') AS tanggal_pa_sebelumnya,
 			COALESCE(pl.nomor_pa_sebelumnya, '') AS nomor_pa_sebelumnya,
 			COALESCE(pl.diagnosa_pa_sebelumnya, '') AS diagnosa_pa_sebelumnya
 		FROM permintaan_labpa pl
@@ -496,12 +497,12 @@ func (r *repository) DaftarPermintaanLabPAByRM(ctx context.Context, noRkmMedis s
 			pl.status,
 			pl.informasi_tambahan,
 			pl.diagnosa_klinis,
-			COALESCE(pl.pengambilan_bahan, '') AS pengambilan_bahan,
+			COALESCE(DATE_FORMAT(pl.pengambilan_bahan, '%%Y-%%m-%%d'), '') AS pengambilan_bahan,
 			COALESCE(pl.diperoleh_dengan, '') AS diperoleh_dengan,
 			COALESCE(pl.lokasi_jaringan, '') AS lokasi_jaringan,
 			COALESCE(pl.diawetkan_dengan, '') AS diawetkan_dengan,
 			COALESCE(pl.pernah_dilakukan_di, '') AS pernah_dilakukan_di,
-			COALESCE(pl.tanggal_pa_sebelumnya, '') AS tanggal_pa_sebelumnya,
+			COALESCE(DATE_FORMAT(pl.tanggal_pa_sebelumnya, '%%Y-%%m-%%d'), '') AS tanggal_pa_sebelumnya,
 			COALESCE(pl.nomor_pa_sebelumnya, '') AS nomor_pa_sebelumnya,
 			COALESCE(pl.diagnosa_pa_sebelumnya, '') AS diagnosa_pa_sebelumnya
 		FROM permintaan_labpa pl
@@ -572,12 +573,12 @@ func (r *repository) DetailPermintaanLabPA(ctx context.Context, noPermintaan str
 			pl.status,
 			pl.informasi_tambahan,
 			pl.diagnosa_klinis,
-			COALESCE(pl.pengambilan_bahan, '') AS pengambilan_bahan,
+			COALESCE(DATE_FORMAT(pl.pengambilan_bahan, '%Y-%m-%d'), '') AS pengambilan_bahan,
 			COALESCE(pl.diperoleh_dengan, '') AS diperoleh_dengan,
 			COALESCE(pl.lokasi_jaringan, '') AS lokasi_jaringan,
 			COALESCE(pl.diawetkan_dengan, '') AS diawetkan_dengan,
 			COALESCE(pl.pernah_dilakukan_di, '') AS pernah_dilakukan_di,
-			COALESCE(pl.tanggal_pa_sebelumnya, '') AS tanggal_pa_sebelumnya,
+			COALESCE(DATE_FORMAT(pl.tanggal_pa_sebelumnya, '%Y-%m-%d'), '') AS tanggal_pa_sebelumnya,
 			COALESCE(pl.nomor_pa_sebelumnya, '') AS nomor_pa_sebelumnya,
 			COALESCE(pl.diagnosa_pa_sebelumnya, '') AS diagnosa_pa_sebelumnya
 		FROM permintaan_labpa pl
@@ -669,7 +670,7 @@ func (r *repository) UpdatePermintaanLabPA(ctx context.Context, noPermintaan str
 		    pernah_dilakukan_di = ?, tanggal_pa_sebelumnya = ?, nomor_pa_sebelumnya = ?, diagnosa_pa_sebelumnya = ?
 		WHERE noorder = ?
 	`
-	_, err = tx.ExecContext(ctx, updateHeaderQuery,
+	res, err := tx.ExecContext(ctx, updateHeaderQuery,
 		req.TanggalPermintaan, req.JamPermintaan, req.InformasiTambahan, req.DiagnosaKlinis,
 		toNullString(tglPengambilanBahan),
 		toNullString(req.DiperolehDengan),
@@ -682,6 +683,9 @@ func (r *repository) UpdatePermintaanLabPA(ctx context.Context, noPermintaan str
 		noPermintaan,
 	)
 	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 
@@ -709,14 +713,17 @@ func (r *repository) HapusPermintaanLabPA(ctx context.Context, noPermintaan stri
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM permintaan_pemeriksaan_labpa WHERE noorder = ?`, noPermintaan); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM permintaan_labpa WHERE noorder = ?`, noPermintaan); err != nil {
-		_ = tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM permintaan_labpa WHERE noorder = ?`, noPermintaan)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckRowsAffected(res); err != nil {
 		return err
 	}
 

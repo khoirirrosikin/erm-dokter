@@ -58,6 +58,9 @@ func (s *service) UpdatePermintaanLabMB(ctx context.Context, kodeDokterLogin, no
 	}
 
 	if err := s.repo.UpdatePermintaanLabMB(ctx, noPermintaan, req, kodeTindakanList, templateMap); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, apperror.NewNotFoundError("Data permintaan laboratorium tidak ditemukan")
+		}
 		s.log.Error("Gagal memperbarui permintaan lab MB %s: %v", noPermintaan, err)
 		return nil, err
 	}
@@ -195,6 +198,9 @@ func (s *service) HapusPermintaanLabMB(ctx context.Context, noRawat string, noPe
 	}
 
 	if err := s.repo.HapusPermintaanLabMB(ctx, noPermintaan); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperror.NewNotFoundError("Data permintaan laboratorium tidak ditemukan")
+		}
 		s.log.Error("Gagal menghapus permintaan lab MB di repository %s: %v", noPermintaan, err)
 		return err
 	}
