@@ -1,7 +1,11 @@
 package rawatinap
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -215,6 +219,161 @@ func TestBuildFilterConditions(t *testing.T) {
 
 		if len(args) != 10 {
 			t.Fatalf("Expected 10 args, got %d: %v", len(args), args)
+		}
+	})
+}
+
+type stubQueryFunc func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error)
+
+type stubConnector struct {
+	fn stubQueryFunc
+}
+
+func (c *stubConnector) Connect(context.Context) (driver.Conn, error) {
+	return &stubConn{fn: c.fn}, nil
+}
+
+func (c *stubConnector) Driver() driver.Driver { return nil }
+
+type stubConn struct {
+	fn stubQueryFunc
+}
+
+func (c *stubConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare not supported in stub")
+}
+func (c *stubConn) Close() error              { return nil }
+func (c *stubConn) Begin() (driver.Tx, error) { return nil, errors.New("tx not supported in stub") }
+
+func (c *stubConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	cols, rows, err := c.fn(query, args)
+	if err != nil {
+		return nil, err
+	}
+	return &stubRows{cols: cols, rows: rows}, nil
+}
+
+type stubRows struct {
+	cols []string
+	rows [][]driver.Value
+	idx  int
+}
+
+func (r *stubRows) Columns() []string { return r.cols }
+func (r *stubRows) Close() error      { return nil }
+func (r *stubRows) Next(dest []driver.Value) error {
+	if r.idx >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.idx])
+	r.idx++
+	return nil
+}
+
+func newStubDB(t *testing.T, fn stubQueryFunc) *sql.DB {
+	t.Helper()
+	db := sql.OpenDB(&stubConnector{fn: fn})
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func TestRepository_CekStatusKamarInap(t *testing.T) {
+	t.Run("Belum pernah rawat inap (has_record=0, is_aktif=0)", func(t *testing.T) {
+		db := newStubDB(t, func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			if !strings.Contains(query, "DATE_FORMAT(tgl_keluar, '%Y-%m-%d')") {
+				t.Errorf("expected query to use DATE_FORMAT on tgl_keluar, got: %s", query)
+			}
+			if len(args) != 1 || args[0].Value != "2026/09/04/000001" {
+				t.Errorf("unexpected args: %+v", args)
+			}
+			return []string{"has_record", "is_aktif"}, [][]driver.Value{{int64(0), int64(0)}}, nil
+		})
+
+		repo := NewRepository(db)
+		isAktif, hasRecord, err := repo.CekStatusKamarInap(context.Background(), "2026/09/04/000001")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if isAktif || hasRecord {
+			t.Fatalf("expected (false, false), got (%v, %v)", isAktif, hasRecord)
+		}
+	})
+
+	t.Run("Pasien aktif dirawat (termasuk pasca Pindah Kamar: has_record=1, is_aktif=1)", func(t *testing.T) {
+		db := newStubDB(t, func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			return []string{"has_record", "is_aktif"}, [][]driver.Value{{[]byte("1"), []byte("1")}}, nil
+		})
+
+		repo := NewRepository(db)
+		isAktif, hasRecord, err := repo.CekStatusKamarInap(context.Background(), "2026/09/04/000002")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !isAktif || !hasRecord {
+			t.Fatalf("expected (true, true), got (%v, %v)", isAktif, hasRecord)
+		}
+	})
+
+	t.Run("Pasien sudah KRS (has_record=1, is_aktif=0)", func(t *testing.T) {
+		db := newStubDB(t, func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			return []string{"has_record", "is_aktif"}, [][]driver.Value{{int64(1), int64(0)}}, nil
+		})
+
+		repo := NewRepository(db)
+		isAktif, hasRecord, err := repo.CekStatusKamarInap(context.Background(), "2026/09/04/000003")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if isAktif || !hasRecord {
+			t.Fatalf("expected (false, true), got (%v, %v)", isAktif, hasRecord)
+		}
+	})
+
+	t.Run("Database error diteruskan", func(t *testing.T) {
+		wantErr := errors.New("connection lost")
+		db := newStubDB(t, func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			return nil, nil, wantErr
+		})
+
+		repo := NewRepository(db)
+		_, _, err := repo.CekStatusKamarInap(context.Background(), "2026/09/04/000004")
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("expected error %v, got %v", wantErr, err)
+		}
+	})
+}
+
+func TestRepository_GetKelasRawat(t *testing.T) {
+	t.Run("Memprioritaskan kamar aktif dan trim spasi", func(t *testing.T) {
+		db := newStubDB(t, func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			if !strings.Contains(query, "(COALESCE(ki.stts_pulang, '-') = '-') DESC") {
+				t.Errorf("expected active room tie-breaker in ORDER BY, got: %s", query)
+			}
+			return []string{"kelas"}, [][]driver.Value{{"  Kelas 1  "}}, nil
+		})
+
+		repo := NewRepository(db)
+		kelas, err := repo.GetKelasRawat(context.Background(), "2026/09/04/000001")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if kelas != "Kelas 1" {
+			t.Fatalf("expected 'Kelas 1', got %q", kelas)
+		}
+	})
+
+	t.Run("Tidak ada record kamar mengembalikan string kosong tanpa error", func(t *testing.T) {
+		db := newStubDB(t, func(query string, args []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			return []string{"kelas"}, nil, nil
+		})
+
+		repo := NewRepository(db)
+		kelas, err := repo.GetKelasRawat(context.Background(), "2026/09/04/000099")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if kelas != "" {
+			t.Fatalf("expected empty string, got %q", kelas)
 		}
 	})
 }

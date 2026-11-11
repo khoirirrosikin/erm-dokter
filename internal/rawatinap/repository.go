@@ -30,14 +30,17 @@ func NewRepository(db *sql.DB) Repository {
 
 func (r *repository) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
 	query := `
-		SELECT stts_pulang, tgl_keluar, jam_keluar 
-		FROM kamar_inap 
-		WHERE no_rawat = ? 
-		ORDER BY tgl_masuk DESC, jam_masuk DESC 
-		LIMIT 1
+		SELECT
+			COUNT(*) > 0 AS has_record,
+			COALESCE(SUM(CASE
+				WHEN COALESCE(stts_pulang, '-') = '-'
+				 AND (tgl_keluar IS NULL OR COALESCE(DATE_FORMAT(tgl_keluar, '%Y-%m-%d'), '0000-00-00') = '0000-00-00')
+				THEN 1 ELSE 0 END), 0) > 0 AS is_aktif
+		FROM kamar_inap
+		WHERE no_rawat = ?
 	`
-	var sttsPulang, tglKeluar, jamKeluar string
-	err := r.db.QueryRowContext(ctx, query, noRawat).Scan(&sttsPulang, &tglKeluar, &jamKeluar)
+	var hasRecord, isAktif bool
+	err := r.db.QueryRowContext(ctx, query, noRawat).Scan(&hasRecord, &isAktif)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, false, nil
@@ -45,20 +48,16 @@ func (r *repository) CekStatusKamarInap(ctx context.Context, noRawat string) (bo
 		return false, false, err
 	}
 
-	if sttsPulang == "-" && tglKeluar == "0000-00-00" && jamKeluar == "00:00:00" {
-		return true, true, nil
-	}
-
-	return false, true, nil
+	return isAktif, hasRecord, nil
 }
 
 func (r *repository) GetKelasRawat(ctx context.Context, noRawat string) (string, error) {
 	query := `
-		SELECT k.kelas
+		SELECT COALESCE(k.kelas, '')
 		FROM kamar_inap ki
 		INNER JOIN kamar k ON ki.kd_kamar = k.kd_kamar
 		WHERE ki.no_rawat = ?
-		ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC
+		ORDER BY (COALESCE(ki.stts_pulang, '-') = '-') DESC, ki.tgl_masuk DESC, ki.jam_masuk DESC
 		LIMIT 1
 	`
 	var kelas string
@@ -73,8 +72,8 @@ func (r *repository) GetKelasRawat(ctx context.Context, noRawat string) (string,
 }
 
 const (
-	sqlKamarInapAktif = "ki.stts_pulang = '-' AND ki.tgl_keluar = '0000-00-00' AND ki.jam_keluar = '00:00:00'"
-	sqlKamarInapKRS   = "ki.stts_pulang <> '-' AND ki.stts_pulang <> 'Pindah Kamar' AND ki.tgl_keluar <> '0000-00-00'"
+	sqlKamarInapAktif = "COALESCE(ki.stts_pulang, '-') = '-' AND (ki.tgl_keluar IS NULL OR COALESCE(DATE_FORMAT(ki.tgl_keluar, '%Y-%m-%d'), '0000-00-00') = '0000-00-00')"
+	sqlKamarInapKRS   = "COALESCE(ki.stts_pulang, '-') <> '-' AND ki.stts_pulang <> 'Pindah Kamar' AND ki.tgl_keluar IS NOT NULL AND COALESCE(DATE_FORMAT(ki.tgl_keluar, '%Y-%m-%d'), '0000-00-00') <> '0000-00-00'"
 )
 
 const selectPasienRawatInap = `
