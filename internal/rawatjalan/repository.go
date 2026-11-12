@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared/formatter"
@@ -33,7 +35,9 @@ func NewRepository(db *sql.DB) Repository {
 	}
 }
 
-const selectKunjunganBukanRujukan = `
+const globalNoRawatWindowMonths = 3
+
+const colsKunjunganBukanRujukan = `
 	SELECT 
 		r.no_rawat,
 		r.no_reg AS no_registrasi,
@@ -65,7 +69,9 @@ const selectKunjunganBukanRujukan = `
 		COALESCE(p.no_ktp, '-') AS no_ktp,
 		COALESCE(r.p_jawab, '-') AS penanggung_jawab,
 		COALESCE(r.hubunganpj, '-') AS hubungan_penanggung_jawab,
-		COALESCE(r.almt_pj, '-') AS alamat_penanggung_jawab
+		COALESCE(r.almt_pj, '-') AS alamat_penanggung_jawab`
+
+const selectKunjunganBukanRujukan = colsKunjunganBukanRujukan + `
 	FROM reg_periksa r
 	INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
 	INNER JOIN poliklinik pol ON r.kd_poli = pol.kd_poli
@@ -73,7 +79,7 @@ const selectKunjunganBukanRujukan = `
 	INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj
 `
 
-const selectKunjunganRujukan = `
+const colsKunjunganRujukan = `
 	SELECT 
 		r.no_rawat,
 		r.no_reg AS no_registrasi,
@@ -105,7 +111,9 @@ const selectKunjunganRujukan = `
 		COALESCE(p.no_ktp, '-') AS no_ktp,
 		COALESCE(r.p_jawab, '-') AS penanggung_jawab,
 		COALESCE(r.hubunganpj, '-') AS hubungan_penanggung_jawab,
-		COALESCE(r.almt_pj, '-') AS alamat_penanggung_jawab
+		COALESCE(r.almt_pj, '-') AS alamat_penanggung_jawab`
+
+const selectKunjunganRujukan = colsKunjunganRujukan + `
 	FROM rujukan_internal_poli rip
 	INNER JOIN reg_periksa r ON rip.no_rawat = r.no_rawat
 	INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
@@ -116,39 +124,95 @@ const selectKunjunganRujukan = `
 	INNER JOIN dokter d_rip ON rip.kd_dokter = d_rip.kd_dokter
 `
 
-var orderByMapping = map[string]func(string) string{
-	"waktu_registrasi":   func(dir string) string { return fmt.Sprintf("r.tgl_registrasi %s, r.jam_reg %s", dir, dir) },
-	"nama_pasien":        func(dir string) string { return fmt.Sprintf("p.nm_pasien %s", dir) },
-	"penjamin":           func(dir string) string { return fmt.Sprintf("pj.png_jawab %s", dir) },
-	"status_pemeriksaan": func(dir string) string { return fmt.Sprintf("r.stts %s", dir) },
-	"status_lanjut":      func(dir string) string { return fmt.Sprintf("r.status_lanjut %s", dir) },
-	"status_bayar":       func(dir string) string { return fmt.Sprintf("r.status_bayar %s", dir) },
-	"jenis_antrean":      func(dir string) string { return fmt.Sprintf("r.tgl_registrasi %s, r.jam_reg %s", dir, dir) },
+func normalizeAntreanSort(orderBy, sortOrder string) (string, string) {
+	col := strings.ToLower(strings.TrimSpace(orderBy))
+	if col == "" {
+		col = "waktu_registrasi"
+	}
+	dir := "ASC"
+	if strings.EqualFold(strings.TrimSpace(sortOrder), "DESC") {
+		dir = "DESC"
+	}
+	return col, dir
+}
+
+func buildAntreanOrderClause(orderBy, sortOrder string, isRujukan bool) string {
+	tieTail := ""
+	if isRujukan {
+		tieTail = ", rip.kd_dokter ASC"
+	}
+
+	switch orderBy {
+	case "nama_pasien":
+		return fmt.Sprintf("p.nm_pasien %s, r.tgl_registrasi ASC, r.jam_reg ASC, r.no_rawat ASC%s", sortOrder, tieTail)
+	case "penjamin":
+		return fmt.Sprintf("pj.png_jawab %s, r.tgl_registrasi ASC, r.jam_reg ASC, r.no_rawat ASC%s", sortOrder, tieTail)
+	case "status_pemeriksaan":
+		return fmt.Sprintf("r.stts %s, r.tgl_registrasi ASC, r.jam_reg ASC, r.no_rawat ASC%s", sortOrder, tieTail)
+	case "status_lanjut":
+		return fmt.Sprintf("r.status_lanjut %s, r.tgl_registrasi ASC, r.jam_reg ASC, r.no_rawat ASC%s", sortOrder, tieTail)
+	case "status_bayar":
+		return fmt.Sprintf("r.status_bayar %s, r.tgl_registrasi ASC, r.jam_reg ASC, r.no_rawat ASC%s", sortOrder, tieTail)
+	case "jenis_antrean":
+		return fmt.Sprintf("r.tgl_registrasi ASC, r.jam_reg ASC, r.no_rawat ASC%s", tieTail)
+	default:
+		return fmt.Sprintf("r.tgl_registrasi %s, r.jam_reg %s, r.no_rawat %s%s", sortOrder, sortOrder, sortOrder, tieTail)
+	}
+}
+
+func compareStringsFold(a, b string) int {
+	if cmp := strings.Compare(strings.ToLower(a), strings.ToLower(b)); cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(a, b)
+}
+
+func compareTieBreaker(a, b KunjunganRawatJalan) int {
+	if cmp := strings.Compare(a.TanggalRegistrasi, b.TanggalRegistrasi); cmp != 0 {
+		return cmp
+	}
+	if cmp := strings.Compare(a.JamRegistrasi, b.JamRegistrasi); cmp != 0 {
+		return cmp
+	}
+	if cmp := strings.Compare(a.NoRawat, b.NoRawat); cmp != 0 {
+		return cmp
+	}
+	if cmp := strings.Compare(string(a.JenisAntrean), string(b.JenisAntrean)); cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(a.KodeDokterRujukan, b.KodeDokterRujukan)
 }
 
 func sortAntrean(data []KunjunganRawatJalan, orderBy string, sortOrder string) {
-	asc := strings.ToUpper(sortOrder) == "ASC"
+	col, dir := normalizeAntreanSort(orderBy, sortOrder)
+	asc := dir == "ASC"
 	sort.SliceStable(data, func(i, j int) bool {
 		a, b := data[i], data[j]
 		var result int
-		switch orderBy {
+		switch col {
 		case "nama_pasien":
-			result = strings.Compare(a.NamaPasien, b.NamaPasien)
+			result = compareStringsFold(a.NamaPasien, b.NamaPasien)
 		case "penjamin":
-			result = strings.Compare(a.NamaPenjamin, b.NamaPenjamin)
+			result = compareStringsFold(a.NamaPenjamin, b.NamaPenjamin)
 		case "status_pemeriksaan":
-			result = strings.Compare(string(a.StatusPemeriksaan), string(b.StatusPemeriksaan))
+			result = compareStringsFold(string(a.StatusPemeriksaan), string(b.StatusPemeriksaan))
 		case "status_lanjut":
-			result = strings.Compare(string(a.StatusLanjut), string(b.StatusLanjut))
+			result = compareStringsFold(string(a.StatusLanjut), string(b.StatusLanjut))
 		case "status_bayar":
-			result = strings.Compare(string(a.StatusBayar), string(b.StatusBayar))
+			result = compareStringsFold(string(a.StatusBayar), string(b.StatusBayar))
 		case "jenis_antrean":
-			result = strings.Compare(string(a.JenisAntrean), string(b.JenisAntrean))
+			result = compareStringsFold(string(a.JenisAntrean), string(b.JenisAntrean))
 		default:
 			result = strings.Compare(a.TanggalRegistrasi, b.TanggalRegistrasi)
 			if result == 0 {
 				result = strings.Compare(a.JamRegistrasi, b.JamRegistrasi)
 			}
+			if result == 0 {
+				result = strings.Compare(a.NoRawat, b.NoRawat)
+			}
+		}
+		if result == 0 {
+			return compareTieBreaker(a, b) < 0
 		}
 		if asc {
 			return result < 0
@@ -204,7 +268,18 @@ func scanKunjungan(s scanner) (*KunjunganRawatJalan, error) {
 	return &k, nil
 }
 
-func buildBranchConditions(dokterCol string, kodeDokter string, filter FilterAntreanDokter) (string, []any) {
+func buildNoRawatBounds(tglAwal, tglAkhir string) (string, string, bool) {
+	start, err1 := time.Parse("2006-01-02", tglAwal)
+	end, err2 := time.Parse("2006-01-02", tglAkhir)
+	if err1 != nil || err2 != nil || start.After(end) {
+		return "", "", false
+	}
+	lower := start.AddDate(0, -globalNoRawatWindowMonths, 0).Format("2006/01/02") + "/"
+	upper := end.AddDate(0, globalNoRawatWindowMonths, 1).Format("2006/01/02") + "/"
+	return lower, upper, true
+}
+
+func buildBranchConditions(noRawatCol string, dokterCol string, kodeDokter string, filter FilterAntreanDokter) (string, []any) {
 	var conditions []string
 	var args []any
 
@@ -216,6 +291,16 @@ func buildBranchConditions(dokterCol string, kodeDokter string, filter FilterAnt
 	if filter.Tanggal != "" {
 		tglAwal, tglAkhir := formatter.ParseRentangTanggal(filter.Tanggal)
 		if tglAwal != "" && tglAkhir != "" {
+			if kodeDokter == "" && noRawatCol != "" {
+				if lower, upper, ok := buildNoRawatBounds(tglAwal, tglAkhir); ok {
+					conditions = append(
+						conditions,
+						noRawatCol+" >= CONVERT(? USING latin1)",
+						noRawatCol+" < CONVERT(? USING latin1)",
+					)
+					args = append(args, lower, upper)
+				}
+			}
 			conditions = append(conditions, "r.tgl_registrasi BETWEEN ? AND ?")
 			args = append(args, tglAwal, tglAkhir)
 		}
@@ -254,7 +339,7 @@ func (r *repository) countBukanRujukan(ctx context.Context, kodeDokter string, f
 	if filter.Keyword != "" {
 		from += " INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis"
 	}
-	where, args := buildBranchConditions("r.kd_dokter", kodeDokter, filter)
+	where, args := buildBranchConditions("r.no_rawat", "r.kd_dokter", kodeDokter, filter)
 	query := "SELECT COUNT(*) " + from + where
 	var count int
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
@@ -268,7 +353,7 @@ func (r *repository) countRujukan(ctx context.Context, kodeDokter string, filter
 	if filter.Keyword != "" {
 		from += " INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis"
 	}
-	where, args := buildBranchConditions("rip.kd_dokter", kodeDokter, filter)
+	where, args := buildBranchConditions("rip.no_rawat", "rip.kd_dokter", kodeDokter, filter)
 	query := "SELECT COUNT(*) " + from + where
 	var count int
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
@@ -280,16 +365,16 @@ func (r *repository) countRujukan(ctx context.Context, kodeDokter string, filter
 func buildBaseQuery(kodeDokter string, filter FilterAntreanDokter) (string, []any) {
 	switch filter.JenisAntrean {
 	case JenisAntreanTidakRujukan:
-		where, args := buildBranchConditions("r.kd_dokter", kodeDokter, filter)
+		where, args := buildBranchConditions("", "r.kd_dokter", kodeDokter, filter)
 		return selectKunjunganBukanRujukan + where, args
 
 	case JenisAntreanRujukan:
-		where, args := buildBranchConditions("rip.kd_dokter", kodeDokter, filter)
+		where, args := buildBranchConditions("", "rip.kd_dokter", kodeDokter, filter)
 		return selectKunjunganRujukan + where, args
 
 	default:
-		where1, args1 := buildBranchConditions("r.kd_dokter", kodeDokter, filter)
-		where2, args2 := buildBranchConditions("rip.kd_dokter", kodeDokter, filter)
+		where1, args1 := buildBranchConditions("", "r.kd_dokter", kodeDokter, filter)
+		where2, args2 := buildBranchConditions("", "rip.kd_dokter", kodeDokter, filter)
 
 		query1 := selectKunjunganBukanRujukan + where1
 		query2 := selectKunjunganRujukan + where2
@@ -323,110 +408,181 @@ func (r *repository) scanAntreanRows(ctx context.Context, query string, args []a
 	return result, nil
 }
 
-func (r *repository) DaftarAntreanDokter(ctx context.Context, kodeDokter string, filter FilterAntreanDokter) ([]KunjunganRawatJalan, int, error) {
-	innerBuilder, exists := orderByMapping[filter.OrderBy]
-	if !exists {
-		innerBuilder = orderByMapping["waktu_registrasi"]
+func (r *repository) queryBukanRujukanPage(
+	ctx context.Context,
+	kodeDokter string,
+	filter FilterAntreanDokter,
+	orderBy string,
+	sortOrder string,
+	limit int,
+	offset int,
+) ([]KunjunganRawatJalan, error) {
+	innerFrom := "FROM reg_periksa r"
+	if filter.Keyword != "" || orderBy == "nama_pasien" {
+		innerFrom += " INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis"
 	}
-	innerOrder := " ORDER BY " + innerBuilder(filter.SortOrder)
+	if orderBy == "penjamin" {
+		innerFrom += " INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj"
+	}
+
+	where, args := buildBranchConditions("r.no_rawat", "r.kd_dokter", kodeDokter, filter)
+	orderClause := buildAntreanOrderClause(orderBy, sortOrder, false)
+
+	query := fmt.Sprintf(`%s
+	FROM (
+		SELECT r.no_rawat
+		%s%s
+		ORDER BY %s
+		LIMIT ? OFFSET ?
+	) AS page_r
+	INNER JOIN reg_periksa r ON page_r.no_rawat = r.no_rawat
+	INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
+	INNER JOIN poliklinik pol ON r.kd_poli = pol.kd_poli
+	INNER JOIN dokter d ON r.kd_dokter = d.kd_dokter
+	INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj
+	ORDER BY %s`, colsKunjunganBukanRujukan, innerFrom, where, orderClause, orderClause)
+
+	pageArgs := append(append([]any(nil), args...), limit, offset)
+	return r.scanAntreanRows(ctx, query, pageArgs)
+}
+
+func (r *repository) queryRujukanPage(
+	ctx context.Context,
+	kodeDokter string,
+	filter FilterAntreanDokter,
+	orderBy string,
+	sortOrder string,
+	limit int,
+	offset int,
+) ([]KunjunganRawatJalan, error) {
+	innerFrom := "FROM rujukan_internal_poli rip INNER JOIN reg_periksa r ON rip.no_rawat = r.no_rawat"
+	if filter.Keyword != "" || orderBy == "nama_pasien" {
+		innerFrom += " INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis"
+	}
+	if orderBy == "penjamin" {
+		innerFrom += " INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj"
+	}
+
+	where, args := buildBranchConditions("rip.no_rawat", "rip.kd_dokter", kodeDokter, filter)
+	orderClause := buildAntreanOrderClause(orderBy, sortOrder, true)
+
+	query := fmt.Sprintf(`%s
+	FROM (
+		SELECT rip.no_rawat, rip.kd_dokter
+		%s%s
+		ORDER BY %s
+		LIMIT ? OFFSET ?
+	) AS page_rip
+	INNER JOIN rujukan_internal_poli rip ON page_rip.no_rawat = rip.no_rawat AND page_rip.kd_dokter = rip.kd_dokter
+	INNER JOIN reg_periksa r ON rip.no_rawat = r.no_rawat
+	INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
+	INNER JOIN poliklinik pol ON r.kd_poli = pol.kd_poli
+	INNER JOIN dokter d ON r.kd_dokter = d.kd_dokter
+	INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj
+	INNER JOIN poliklinik pol_rip ON rip.kd_poli = pol_rip.kd_poli
+	INNER JOIN dokter d_rip ON rip.kd_dokter = d_rip.kd_dokter
+	ORDER BY %s`, colsKunjunganRujukan, innerFrom, where, orderClause, orderClause)
+
+	pageArgs := append(append([]any(nil), args...), limit, offset)
+	return r.scanAntreanRows(ctx, query, pageArgs)
+}
+
+func (r *repository) DaftarAntreanDokter(ctx context.Context, kodeDokter string, filter FilterAntreanDokter) ([]KunjunganRawatJalan, int, error) {
+	orderBy, sortOrder := normalizeAntreanSort(filter.OrderBy, filter.SortOrder)
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset()
+	if offset < 0 {
+		offset = 0
+	}
 
 	switch filter.JenisAntrean {
 	case JenisAntreanTidakRujukan:
-		totalData, err := r.countBukanRujukan(ctx, kodeDokter, filter)
-		if err != nil {
-			return nil, 0, fmt.Errorf("gagal menghitung total antrean: %w", err)
+		var (
+			totalData     int
+			daftarAntrean []KunjunganRawatJalan
+			countErr      error
+			dataErr       error
+			wg            sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			totalData, countErr = r.countBukanRujukan(ctx, kodeDokter, filter)
+		}()
+		go func() {
+			defer wg.Done()
+			daftarAntrean, dataErr = r.queryBukanRujukanPage(ctx, kodeDokter, filter, orderBy, sortOrder, limit, offset)
+		}()
+		wg.Wait()
+
+		if countErr != nil {
+			return nil, 0, fmt.Errorf("gagal menghitung total antrean: %w", countErr)
+		}
+		if dataErr != nil {
+			return nil, 0, dataErr
 		}
 		if totalData == 0 {
 			return make([]KunjunganRawatJalan, 0), 0, nil
-		}
-		where, args := buildBranchConditions("r.kd_dokter", kodeDokter, filter)
-		query := selectKunjunganBukanRujukan + where + innerOrder + " LIMIT ? OFFSET ?"
-		args = append(args, filter.Limit, filter.Offset())
-		daftarAntrean, err := r.scanAntreanRows(ctx, query, args)
-		if err != nil {
-			return nil, 0, err
 		}
 		return daftarAntrean, totalData, nil
 
 	case JenisAntreanRujukan:
-		totalData, err := r.countRujukan(ctx, kodeDokter, filter)
-		if err != nil {
-			return nil, 0, fmt.Errorf("gagal menghitung total antrean: %w", err)
+		var (
+			totalData     int
+			daftarAntrean []KunjunganRawatJalan
+			countErr      error
+			dataErr       error
+			wg            sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			totalData, countErr = r.countRujukan(ctx, kodeDokter, filter)
+		}()
+		go func() {
+			defer wg.Done()
+			daftarAntrean, dataErr = r.queryRujukanPage(ctx, kodeDokter, filter, orderBy, sortOrder, limit, offset)
+		}()
+		wg.Wait()
+
+		if countErr != nil {
+			return nil, 0, fmt.Errorf("gagal menghitung total antrean: %w", countErr)
+		}
+		if dataErr != nil {
+			return nil, 0, dataErr
 		}
 		if totalData == 0 {
 			return make([]KunjunganRawatJalan, 0), 0, nil
 		}
-		where, args := buildBranchConditions("rip.kd_dokter", kodeDokter, filter)
-		query := selectKunjunganRujukan + where + innerOrder + " LIMIT ? OFFSET ?"
-		args = append(args, filter.Limit, filter.Offset())
-		daftarAntrean, err := r.scanAntreanRows(ctx, query, args)
-		if err != nil {
-			return nil, 0, err
-		}
 		return daftarAntrean, totalData, nil
 
 	default:
-		if kodeDokter == "" {
-			totalData, err := r.countBukanRujukan(ctx, "", filter)
-			if err != nil {
-				return nil, 0, fmt.Errorf("gagal menghitung total antrean: %w", err)
-			}
-			if totalData == 0 {
-				return make([]KunjunganRawatJalan, 0), 0, nil
-			}
+		var (
+			countNonRujukan int
+			countRujukan    int
+			errNonRujukan   error
+			errRujukan      error
+			countWG         sync.WaitGroup
+		)
+		countWG.Add(2)
+		go func() {
+			defer countWG.Done()
+			countNonRujukan, errNonRujukan = r.countBukanRujukan(ctx, kodeDokter, filter)
+		}()
+		go func() {
+			defer countWG.Done()
+			countRujukan, errRujukan = r.countRujukan(ctx, kodeDokter, filter)
+		}()
+		countWG.Wait()
 
-			where, args := buildBranchConditions("r.kd_dokter", "", filter)
-			pageQuery := "SELECT r.no_rawat FROM reg_periksa r"
-			if filter.Keyword != "" {
-				pageQuery += " INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis"
-			}
-			pageQuery += where + innerOrder + " LIMIT ? OFFSET ?"
-			pageArgs := append(append([]any(nil), args...), filter.Limit, filter.Offset())
-
-			idRows, err := r.db.QueryContext(ctx, pageQuery, pageArgs...)
-			if err != nil {
-				return nil, 0, fmt.Errorf("gagal query halaman antrean: %w", err)
-			}
-			defer idRows.Close()
-
-			var pageNoRawats []string
-			for idRows.Next() {
-				var nr string
-				if err := idRows.Scan(&nr); err == nil {
-					pageNoRawats = append(pageNoRawats, nr)
-				}
-			}
-			if err := idRows.Err(); err != nil {
-				return nil, 0, fmt.Errorf("gagal membaca baris halaman antrean: %w", err)
-			}
-
-			if len(pageNoRawats) == 0 {
-				return make([]KunjunganRawatJalan, 0), totalData, nil
-			}
-
-			placeholders := make([]string, len(pageNoRawats))
-			idArgs := make([]any, len(pageNoRawats))
-			for i, nr := range pageNoRawats {
-				placeholders[i] = "?"
-				idArgs[i] = nr
-			}
-			detailQuery := selectKunjunganBukanRujukan + fmt.Sprintf(" WHERE r.no_rawat IN (%s) ", strings.Join(placeholders, ", ")) + innerOrder
-			daftarAntrean, err := r.scanAntreanRows(ctx, detailQuery, idArgs)
-			if err != nil {
-				return nil, 0, err
-			}
-
-			return daftarAntrean, totalData, nil
+		if errNonRujukan != nil {
+			return nil, 0, fmt.Errorf("gagal menghitung antrean bukan rujukan: %w", errNonRujukan)
 		}
-
-		countNonRujukan, err := r.countBukanRujukan(ctx, kodeDokter, filter)
-		if err != nil {
-			return nil, 0, fmt.Errorf("gagal menghitung antrean bukan rujukan: %w", err)
-		}
-
-		countRujukan, err := r.countRujukan(ctx, kodeDokter, filter)
-		if err != nil {
-			return nil, 0, fmt.Errorf("gagal menghitung antrean rujukan: %w", err)
+		if errRujukan != nil {
+			return nil, 0, fmt.Errorf("gagal menghitung antrean rujukan: %w", errRujukan)
 		}
 
 		totalData := countNonRujukan + countRujukan
@@ -435,10 +591,7 @@ func (r *repository) DaftarAntreanDokter(ctx context.Context, kodeDokter string,
 		}
 
 		if countRujukan == 0 {
-			where, args := buildBranchConditions("r.kd_dokter", kodeDokter, filter)
-			query := selectKunjunganBukanRujukan + where + innerOrder + " LIMIT ? OFFSET ?"
-			args = append(args, filter.Limit, filter.Offset())
-			daftarAntrean, err := r.scanAntreanRows(ctx, query, args)
+			daftarAntrean, err := r.queryBukanRujukanPage(ctx, kodeDokter, filter, orderBy, sortOrder, limit, offset)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -446,40 +599,44 @@ func (r *repository) DaftarAntreanDokter(ctx context.Context, kodeDokter string,
 		}
 
 		if countNonRujukan == 0 {
-			where, args := buildBranchConditions("rip.kd_dokter", kodeDokter, filter)
-			query := selectKunjunganRujukan + where + innerOrder + " LIMIT ? OFFSET ?"
-			args = append(args, filter.Limit, filter.Offset())
-			daftarAntrean, err := r.scanAntreanRows(ctx, query, args)
+			daftarAntrean, err := r.queryRujukanPage(ctx, kodeDokter, filter, orderBy, sortOrder, limit, offset)
 			if err != nil {
 				return nil, 0, err
 			}
 			return daftarAntrean, totalData, nil
 		}
 
-		innerLimit := filter.Offset() + filter.Limit
-		innerLimitClause := fmt.Sprintf(" LIMIT %d", innerLimit)
+		innerLimit := offset + limit
+		var (
+			branch1 []KunjunganRawatJalan
+			branch2 []KunjunganRawatJalan
+			err1    error
+			err2    error
+			dataWG  sync.WaitGroup
+		)
+		dataWG.Add(2)
+		go func() {
+			defer dataWG.Done()
+			branch1, err1 = r.queryBukanRujukanPage(ctx, kodeDokter, filter, orderBy, sortOrder, innerLimit, 0)
+		}()
+		go func() {
+			defer dataWG.Done()
+			branch2, err2 = r.queryRujukanPage(ctx, kodeDokter, filter, orderBy, sortOrder, innerLimit, 0)
+		}()
+		dataWG.Wait()
 
-		where1, args1 := buildBranchConditions("r.kd_dokter", kodeDokter, filter)
-		query1 := selectKunjunganBukanRujukan + where1 + innerOrder + innerLimitClause
-
-		where2, args2 := buildBranchConditions("rip.kd_dokter", kodeDokter, filter)
-		query2 := selectKunjunganRujukan + where2 + innerOrder + innerLimitClause
-
-		branch1, err := r.scanAntreanRows(ctx, query1, args1)
-		if err != nil {
-			return nil, 0, err
+		if err1 != nil {
+			return nil, 0, err1
 		}
-
-		branch2, err := r.scanAntreanRows(ctx, query2, args2)
-		if err != nil {
-			return nil, 0, err
+		if err2 != nil {
+			return nil, 0, err2
 		}
 
 		merged := append(branch1, branch2...)
-		sortAntrean(merged, filter.OrderBy, filter.SortOrder)
+		sortAntrean(merged, orderBy, sortOrder)
 
-		start := filter.Offset()
-		end := start + filter.Limit
+		start := offset
+		end := start + limit
 		if start >= len(merged) {
 			return make([]KunjunganRawatJalan, 0), totalData, nil
 		}
