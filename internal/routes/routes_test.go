@@ -119,7 +119,6 @@ func TestRouteConfig_Production_IPWhitelistAndDocsBlocking(t *testing.T) {
 	routeCfg.Setup()
 	handler := routeCfg.BuildHandler("*")
 
-	// 1. Health check bypasses IP check
 	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
 	reqHealth.RemoteAddr = "10.0.0.99:12345"
 	recHealth := httptest.NewRecorder()
@@ -128,7 +127,6 @@ func TestRouteConfig_Production_IPWhitelistAndDocsBlocking(t *testing.T) {
 		t.Errorf("Expected /health status 200 in production, got %d", recHealth.Code)
 	}
 
-	// 2. Allowed IP accessing API (e.g. 198.51.100.10) should pass whitelist (returns 401 due to missing token, NOT 403)
 	reqAllowed := httptest.NewRequest(http.MethodGet, "/api/v1/master/poli", nil)
 	reqAllowed.RemoteAddr = "198.51.100.10:54321"
 	recAllowed := httptest.NewRecorder()
@@ -137,7 +135,6 @@ func TestRouteConfig_Production_IPWhitelistAndDocsBlocking(t *testing.T) {
 		t.Errorf("Allowed IP 198.51.100.10 should not be forbidden, got 403")
 	}
 
-	// 3. Disallowed IP accessing API (e.g. 203.0.113.99) should receive 403 Forbidden
 	reqBlocked := httptest.NewRequest(http.MethodGet, "/api/v1/master/poli", nil)
 	reqBlocked.RemoteAddr = "203.0.113.99:54321"
 	recBlocked := httptest.NewRecorder()
@@ -146,7 +143,6 @@ func TestRouteConfig_Production_IPWhitelistAndDocsBlocking(t *testing.T) {
 		t.Errorf("Disallowed IP should receive 403 Forbidden, got %d", recBlocked.Code)
 	}
 
-	// 4. Docs in production must return 404 Not Found even from allowed IP
 	reqDocsAllowed := httptest.NewRequest(http.MethodGet, "/docs", nil)
 	reqDocsAllowed.RemoteAddr = "198.51.100.10:54321"
 	recDocsAllowed := httptest.NewRecorder()

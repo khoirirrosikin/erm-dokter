@@ -13,7 +13,6 @@ import (
 	"erm-dokter/internal/pkg/logger"
 )
 
-// DriverNameWithTracker adalah nama driver yang dibungkus oleh hook trackersql
 const DriverNameWithTracker = "mysql-tracker"
 
 var (
@@ -31,7 +30,6 @@ func initDriver(log *logger.Logger) {
 	}
 }
 
-// GetTrackerHook mengembalikan instance TrackerHook global
 func GetTrackerHook() *TrackerHook {
 	return trackerHook
 }
