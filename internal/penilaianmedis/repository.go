@@ -3,6 +3,7 @@ package penilaianmedis
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 type Repository interface {
@@ -48,4 +49,12 @@ type repository struct {
 
 func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
+}
+
+func normalizeZeroDateTime(val string) string {
+	trimmed := strings.TrimSpace(val)
+	if strings.HasPrefix(trimmed, "0000-00-00") {
+		return ""
+	}
+	return trimmed
 }

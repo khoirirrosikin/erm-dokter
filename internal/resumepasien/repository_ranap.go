@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 
 	"erm-dokter/internal/pkg/database"
 )
@@ -51,24 +53,18 @@ const selectResumePasienRanap = `
 		rpr.dilanjutkan,
 		COALESCE(rpr.ket_dilanjutkan, '') AS ket_dilanjutkan,
 		COALESCE(DATE_FORMAT(rpr.kontrol, '%Y-%m-%d %H:%i:%s'), '') AS kontrol,
-		COALESCE(rpr.obat_pulang, '') AS obat_pulang,
-		COALESCE(ki.tgl_masuk, '') AS tgl_masuk,
-		COALESCE(ki.jam_masuk, '') AS jam_masuk,
-		COALESCE(ki.tgl_keluar, '') AS tgl_keluar,
-		COALESCE(ki.jam_keluar, '') AS jam_keluar
+		COALESCE(rpr.obat_pulang, '') AS obat_pulang
 	FROM resume_pasien_ranap rpr
-	INNER JOIN dokter d ON d.kd_dokter = rpr.kd_dokter
-	LEFT JOIN (
-		SELECT 
-			no_rawat,
-			MIN(tgl_masuk) AS tgl_masuk,
-			MIN(jam_masuk) AS jam_masuk,
-			MAX(tgl_keluar) AS tgl_keluar,
-			MAX(jam_keluar) AS jam_keluar
-		FROM kamar_inap
-		GROUP BY no_rawat
-	) ki ON ki.no_rawat = rpr.no_rawat
+	LEFT JOIN dokter d ON d.kd_dokter = rpr.kd_dokter
 `
+
+func normalizeZeroDateTime(val string) string {
+	trimmed := strings.TrimSpace(val)
+	if strings.HasPrefix(trimmed, "0000-00-00") {
+		return ""
+	}
+	return trimmed
+}
 
 func scanResumePasienRanap(scanner interface{ Scan(dest ...any) error }) (*ResumePasienRanap, error) {
 	var item ResumePasienRanap
@@ -76,8 +72,6 @@ func scanResumePasienRanap(scanner interface{ Scan(dest ...any) error }) (*Resum
 		caraKeluar  string
 		keadaan     string
 		dilanjutkan string
-		tglKeluar   string
-		jamKeluar   string
 	)
 
 	err := scanner.Scan(
@@ -123,10 +117,6 @@ func scanResumePasienRanap(scanner interface{ Scan(dest ...any) error }) (*Resum
 		&item.KeteranganDilanjutkan,
 		&item.WaktuKontrol,
 		&item.ObatPulang,
-		&item.TanggalMasuk,
-		&item.JamMasuk,
-		&tglKeluar,
-		&jamKeluar,
 	)
 	if err != nil {
 		return nil, err
@@ -135,15 +125,185 @@ func scanResumePasienRanap(scanner interface{ Scan(dest ...any) error }) (*Resum
 	item.CaraKeluar = CaraKeluar(caraKeluar)
 	item.KeadaanPulang = KeadaanPulang(keadaan)
 	item.Dilanjutkan = Dilanjutkan(dilanjutkan)
-
-	if tglKeluar != "0000-00-00" {
-		item.TanggalKeluar = tglKeluar
-	}
-	if jamKeluar != "00:00:00" {
-		item.JamKeluar = jamKeluar
-	}
+	item.WaktuKontrol = normalizeZeroDateTime(item.WaktuKontrol)
 
 	return &item, nil
+}
+
+type kamarInapStayRow struct {
+	tglMasuk   string
+	jamMasuk   string
+	tglKeluar  string
+	jamKeluar  string
+	sttsPulang string
+	kamar      string
+}
+
+func formatNamaKamar(kdKamar, nmBangsal string) string {
+	kdKamar = strings.TrimSpace(kdKamar)
+	nmBangsal = strings.TrimSpace(nmBangsal)
+	switch {
+	case kdKamar != "" && nmBangsal != "":
+		return kdKamar + " - " + nmBangsal
+	case nmBangsal != "":
+		return nmBangsal
+	default:
+		return kdKamar
+	}
+}
+
+func isKamarStayRowAktif(sr kamarInapStayRow) bool {
+	stts := strings.TrimSpace(sr.sttsPulang)
+	tglKel := strings.TrimSpace(sr.tglKeluar)
+	return (stts == "" || stts == "-") && (tglKel == "" || tglKel == "0000-00-00")
+}
+
+func (r *repository) queryInfoKamarInapMap(ctx context.Context, noRawatList []string) (map[string]InfoKamarInap, error) {
+	result := make(map[string]InfoKamarInap)
+	if len(noRawatList) == 0 {
+		return result, nil
+	}
+
+	seen := make(map[string]struct{}, len(noRawatList))
+	placeholders := make([]string, 0, len(noRawatList))
+	args := make([]any, 0, len(noRawatList))
+	for _, nr := range noRawatList {
+		nr = strings.TrimSpace(nr)
+		if nr == "" {
+			continue
+		}
+		if _, exists := seen[nr]; exists {
+			continue
+		}
+		seen[nr] = struct{}{}
+		placeholders = append(placeholders, "?")
+		args = append(args, nr)
+	}
+	if len(args) == 0 {
+		return result, nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			ki.no_rawat,
+			COALESCE(DATE_FORMAT(ki.tgl_masuk, '%%Y-%%m-%%d'), '') AS tgl_masuk,
+			COALESCE(ki.jam_masuk, '') AS jam_masuk,
+			COALESCE(DATE_FORMAT(ki.tgl_keluar, '%%Y-%%m-%%d'), '') AS tgl_keluar,
+			COALESCE(ki.jam_keluar, '') AS jam_keluar,
+			COALESCE(ki.stts_pulang, '-') AS stts_pulang,
+			COALESCE(ki.kd_kamar, '') AS kd_kamar,
+			COALESCE(b.nm_bangsal, '') AS nm_bangsal
+		FROM kamar_inap ki
+		LEFT JOIN kamar k ON k.kd_kamar = ki.kd_kamar
+		LEFT JOIN bangsal b ON b.kd_bangsal = k.kd_bangsal
+		WHERE ki.no_rawat IN (%s)
+		ORDER BY ki.no_rawat ASC, ki.tgl_masuk ASC, ki.jam_masuk ASC
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	staysByNoRawat := make(map[string][]kamarInapStayRow, len(args))
+	for rows.Next() {
+		var noRawat, kdKamar, nmBangsal string
+		var sr kamarInapStayRow
+		if err := rows.Scan(
+			&noRawat,
+			&sr.tglMasuk,
+			&sr.jamMasuk,
+			&sr.tglKeluar,
+			&sr.jamKeluar,
+			&sr.sttsPulang,
+			&kdKamar,
+			&nmBangsal,
+		); err != nil {
+			return nil, err
+		}
+		sr.kamar = formatNamaKamar(kdKamar, nmBangsal)
+		staysByNoRawat[noRawat] = append(staysByNoRawat[noRawat], sr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for noRawat, stayRows := range staysByNoRawat {
+		var info InfoKamarInap
+		for _, sr := range stayRows {
+			if sr.tglMasuk != "" && sr.tglMasuk != "0000-00-00" {
+				info.TanggalMasuk = sr.tglMasuk
+				info.JamMasuk = sr.jamMasuk
+				break
+			}
+		}
+
+		activeIdx := -1
+		for i := len(stayRows) - 1; i >= 0; i-- {
+			if isKamarStayRowAktif(stayRows[i]) {
+				activeIdx = i
+				break
+			}
+		}
+
+		if activeIdx >= 0 {
+			info.Kamar = stayRows[activeIdx].kamar
+		} else if len(stayRows) > 0 {
+			finalRow := stayRows[len(stayRows)-1]
+			for i := len(stayRows) - 1; i >= 0; i-- {
+				if !strings.EqualFold(strings.TrimSpace(stayRows[i].sttsPulang), "Pindah Kamar") {
+					finalRow = stayRows[i]
+					break
+				}
+			}
+			info.Kamar = finalRow.kamar
+			if finalRow.tglKeluar != "" && finalRow.tglKeluar != "0000-00-00" {
+				info.TanggalKeluar = finalRow.tglKeluar
+				info.JamKeluar = finalRow.jamKeluar
+			}
+		}
+
+		result[noRawat] = info
+	}
+
+	return result, nil
+}
+
+func (r *repository) GetInfoKamarInap(ctx context.Context, noRawat string) (*InfoKamarInap, error) {
+	noRawat = strings.TrimSpace(noRawat)
+	if noRawat == "" {
+		return nil, nil
+	}
+	infoMap, err := r.queryInfoKamarInapMap(ctx, []string{noRawat})
+	if err != nil {
+		return nil, err
+	}
+	info, ok := infoMap[noRawat]
+	if !ok {
+		return nil, nil
+	}
+	return &info, nil
+}
+
+func (r *repository) hydrateInfoKamarInap(ctx context.Context, list []ResumePasienRanap) error {
+	if len(list) == 0 {
+		return nil
+	}
+	noRawatList := make([]string, 0, len(list))
+	for i := range list {
+		noRawatList = append(noRawatList, list[i].NoRawat)
+	}
+	infoMap, err := r.queryInfoKamarInapMap(ctx, noRawatList)
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		if info, ok := infoMap[list[i].NoRawat]; ok {
+			list[i].InfoKamarInap = info
+		}
+	}
+	return nil
 }
 
 func (r *repository) DetailResumePasienRanap(ctx context.Context, noRawat string) (*ResumePasienRanap, error) {
@@ -155,6 +315,14 @@ func (r *repository) DetailResumePasienRanap(ctx context.Context, noRawat string
 			return nil, sql.ErrNoRows
 		}
 		return nil, err
+	}
+
+	infoMap, err := r.queryInfoKamarInapMap(ctx, []string{item.NoRawat})
+	if err != nil {
+		return nil, err
+	}
+	if info, ok := infoMap[item.NoRawat]; ok {
+		item.InfoKamarInap = info
 	}
 	return item, nil
 }
@@ -171,7 +339,7 @@ func (r *repository) RiwayatResumePasienRanapByNoRM(ctx context.Context, noRM st
 	}
 	defer rows.Close()
 
-	var list []ResumePasienRanap
+	list := make([]ResumePasienRanap, 0)
 	for rows.Next() {
 		item, err := scanResumePasienRanap(rows)
 		if err != nil {
@@ -182,8 +350,12 @@ func (r *repository) RiwayatResumePasienRanapByNoRM(ctx context.Context, noRM st
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if list == nil {
-		list = []ResumePasienRanap{}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	if err := r.hydrateInfoKamarInap(ctx, list); err != nil {
+		return nil, err
 	}
 	return list, nil
 }

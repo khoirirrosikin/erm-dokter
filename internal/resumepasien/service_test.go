@@ -31,6 +31,8 @@ type mockRepository struct {
 	detailRanapErr       error
 	riwayatRanapData     []resumepasien.ResumePasienRanap
 	riwayatRanapErr      error
+	infoKamarData        *resumepasien.InfoKamarInap
+	infoKamarErr         error
 	adaRanapResult       bool
 	adaRanapErr          error
 	simpanRanapErr       error
@@ -106,6 +108,13 @@ func (m *mockRepository) RiwayatResumePasienRanapByNoRM(ctx context.Context, noR
 		return nil, m.riwayatRanapErr
 	}
 	return m.riwayatRanapData, nil
+}
+
+func (m *mockRepository) GetInfoKamarInap(ctx context.Context, noRawat string) (*resumepasien.InfoKamarInap, error) {
+	if m.infoKamarErr != nil {
+		return nil, m.infoKamarErr
+	}
+	return m.infoKamarData, nil
 }
 
 func (m *mockRepository) CekResumePasienRanapAda(ctx context.Context, noRawat string) (bool, error) {
@@ -841,5 +850,104 @@ func TestService_UpdateAndHapusResumePasien_ErrNoRowsMapsToNotFound(t *testing.T
 		if !errors.As(err, &notFound) {
 			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
 		}
+	})
+}
+
+func TestService_ResumePasienRanap_PostDischargeLock(t *testing.T) {
+	noRawat := "2026/09/07/000010"
+	simpanReq := resumepasien.SimpanResumePasienRanapRequest{
+		NoRawat: noRawat,
+		DataResumePasienRanap: resumepasien.DataResumePasienRanap{
+			DiagnosaAwal:  "Chest Pain",
+			AlasanRawat:   "Evaluasi nyeri dada",
+			KeluhanUtama:  "Nyeri dada kiri",
+			DiagnosaUtama: "STEMI",
+			CaraKeluar:    resumepasien.CaraKeluarAtasIzinDokter,
+			KeadaanPulang: resumepasien.KeadaanPulangMembaik,
+			Dilanjutkan:   resumepasien.DilanjutkanKembaliKeRS,
+			WaktuKontrol:  "2026-09-20 09:00:00",
+		},
+	}
+	updateReq := resumepasien.UpdateResumePasienRanapRequest{
+		DataResumePasienRanap: simpanReq.DataResumePasienRanap,
+	}
+
+	t.Run("Masih aktif dirawat tetap diizinkan meskipun registrasi sudah lama", func(t *testing.T) {
+		oldReg := time.Now().Add(-10 * 24 * time.Hour)
+		repo := &mockRepository{
+			detailRanapData: &resumepasien.ResumePasienRanap{NoRawat: noRawat, KodeDokter: "DR01"},
+		}
+		ralanSvc := &mockRawatJalanService{
+			tglReg: oldReg.Format("2006-01-02"),
+			jamReg: oldReg.Format("15:04:05"),
+			exists: true,
+		}
+		ranapSvc := &mockRawatInapService{isAktifRanap: true, hasRecordKamar: true}
+		svc := resumepasien.NewService(repo, ralanSvc, ranapSvc, 24, logger.New())
+
+		if _, err := svc.SimpanResumePasienRanap(context.Background(), noRawat, "DR01", simpanReq); err != nil {
+			t.Fatalf("expected SimpanResumePasienRanap allowed while active, got %v", err)
+		}
+		if _, err := svc.UpdateResumePasienRanap(context.Background(), "DR01", noRawat, updateReq); err != nil {
+			t.Fatalf("expected UpdateResumePasienRanap allowed while active, got %v", err)
+		}
+		if err := svc.HapusResumePasienRanap(context.Background(), "DR01", noRawat); err != nil {
+			t.Fatalf("expected HapusResumePasienRanap allowed while active, got %v", err)
+		}
+	})
+
+	t.Run("Sudah KRS masih dalam batas maxEditJam diizinkan", func(t *testing.T) {
+		waktuPulang := time.Now().Add(-12 * time.Hour)
+		repo := &mockRepository{
+			detailRanapData: &resumepasien.ResumePasienRanap{NoRawat: noRawat, KodeDokter: "DR01"},
+			infoKamarData: &resumepasien.InfoKamarInap{
+				TanggalKeluar: waktuPulang.Format("2006-01-02"),
+				JamKeluar:     waktuPulang.Format("15:04:05"),
+			},
+		}
+		ralanSvc := &mockRawatJalanService{exists: true}
+		ranapSvc := &mockRawatInapService{isAktifRanap: false, hasRecordKamar: true}
+		svc := resumepasien.NewService(repo, ralanSvc, ranapSvc, 24, logger.New())
+
+		if _, err := svc.SimpanResumePasienRanap(context.Background(), noRawat, "DR01", simpanReq); err != nil {
+			t.Fatalf("expected SimpanResumePasienRanap allowed within 24h window, got %v", err)
+		}
+		if _, err := svc.UpdateResumePasienRanap(context.Background(), "DR01", noRawat, updateReq); err != nil {
+			t.Fatalf("expected UpdateResumePasienRanap allowed within 24h window, got %v", err)
+		}
+		if err := svc.HapusResumePasienRanap(context.Background(), "DR01", noRawat); err != nil {
+			t.Fatalf("expected HapusResumePasienRanap allowed within 24h window, got %v", err)
+		}
+	})
+
+	t.Run("Sudah KRS melewati batas maxEditJam kustom (24 jam) ditolak 403 Forbidden", func(t *testing.T) {
+		waktuPulang := time.Now().Add(-25 * time.Hour)
+		repo := &mockRepository{
+			detailRanapData: &resumepasien.ResumePasienRanap{NoRawat: noRawat, KodeDokter: "DR01"},
+			infoKamarData: &resumepasien.InfoKamarInap{
+				TanggalKeluar: waktuPulang.Format("2006-01-02"),
+				JamKeluar:     waktuPulang.Format("15:04:05"),
+			},
+		}
+		ralanSvc := &mockRawatJalanService{exists: true}
+		ranapSvc := &mockRawatInapService{isAktifRanap: false, hasRecordKamar: true}
+		svc := resumepasien.NewService(repo, ralanSvc, ranapSvc, 24, logger.New())
+
+		assertForbidden := func(label string, err error) {
+			t.Helper()
+			var forbidden *apperror.ForbiddenError
+			if !errors.As(err, &forbidden) {
+				t.Fatalf("%s: expected *apperror.ForbiddenError, got %T (%v)", label, err, err)
+			}
+		}
+
+		_, err := svc.SimpanResumePasienRanap(context.Background(), noRawat, "DR01", simpanReq)
+		assertForbidden("SimpanResumePasienRanap", err)
+
+		_, err = svc.UpdateResumePasienRanap(context.Background(), "DR01", noRawat, updateReq)
+		assertForbidden("UpdateResumePasienRanap", err)
+
+		err = svc.HapusResumePasienRanap(context.Background(), "DR01", noRawat)
+		assertForbidden("HapusResumePasienRanap", err)
 	})
 }

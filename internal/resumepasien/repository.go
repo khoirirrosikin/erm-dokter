@@ -15,6 +15,7 @@ type Repository interface {
 
 	DetailResumePasienRanap(ctx context.Context, noRawat string) (*ResumePasienRanap, error)
 	RiwayatResumePasienRanapByNoRM(ctx context.Context, noRM string) ([]ResumePasienRanap, error)
+	GetInfoKamarInap(ctx context.Context, noRawat string) (*InfoKamarInap, error)
 	CekResumePasienRanapAda(ctx context.Context, noRawat string) (bool, error)
 	SimpanResumePasienRanap(ctx context.Context, noRawat, kodeDokter string, req SimpanResumePasienRanapRequest) (*ResumePasienRanap, error)
 	UpdateResumePasienRanap(ctx context.Context, noRawat string, req UpdateResumePasienRanapRequest) (*ResumePasienRanap, error)

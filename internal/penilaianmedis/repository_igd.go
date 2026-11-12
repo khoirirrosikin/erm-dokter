@@ -95,6 +95,7 @@ func scanPenilaianMedisIGD(scanner interface{ Scan(dest ...any) error }) (*Penil
 	if err != nil {
 		return nil, err
 	}
+	item.TanggalPenilaian = normalizeZeroDateTime(item.TanggalPenilaian)
 	return &item, nil
 }
 

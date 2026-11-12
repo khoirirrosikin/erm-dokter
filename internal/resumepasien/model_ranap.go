@@ -97,6 +97,9 @@ func (d *DataResumePasienRanap) Sanitize() {
 	d.KeteranganDilanjutkan = strings.TrimSpace(d.KeteranganDilanjutkan)
 
 	d.WaktuKontrol = strings.TrimSpace(d.WaktuKontrol)
+	if strings.HasPrefix(d.WaktuKontrol, "0000-00-00") {
+		d.WaktuKontrol = ""
+	}
 	if len(d.WaktuKontrol) == 16 {
 		d.WaktuKontrol += ":00"
 	}

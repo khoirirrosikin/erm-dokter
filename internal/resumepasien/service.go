@@ -76,7 +76,7 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat strin
 		return apperror.NewNotFoundError("Data kunjungan pasien tidak ditemukan")
 	}
 
-	_, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
+	isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
 	if err != nil {
 		s.log.Error("Gagal cek status kamar inap untuk no_rawat %s: %v", noRawat, err)
 		return err
@@ -106,6 +106,36 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat strin
 	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
 		if !hasRecordKamar {
 			return apperror.NewBusinessError("Pasien belum/tidak terdaftar di rawat inap. Resume medis rawat inap hanya untuk pasien rawat inap.")
+		}
+		if isAktifRanap {
+			return nil
+		}
+
+		infoKamar, err := s.repo.GetInfoKamarInap(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil info kamar inap untuk no_rawat %s: %v", noRawat, err)
+			return err
+		}
+
+		if infoKamar != nil && infoKamar.TanggalKeluar != "" {
+			jamKeluar := strings.TrimSpace(infoKamar.JamKeluar)
+			if jamKeluar == "" {
+				jamKeluar = "00:00:00"
+			}
+
+			waktuKeluar, err := shared.ParseWaktu(infoKamar.TanggalKeluar, jamKeluar)
+			if err != nil {
+				s.log.Error("Gagal parse waktu keluar kamar inap no_rawat %s (%s %s): %v", noRawat, infoKamar.TanggalKeluar, jamKeluar, err)
+				return err
+			}
+
+			batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+			if time.Now().After(batasWaktu) {
+				return apperror.NewForbiddenError(
+					fmt.Sprintf("Resume pasien rawat inap tidak dapat %s, melewati batas %d jam setelah pasien pulang", aksi, s.maxEditJam),
+					fmt.Sprintf("Resume pasien rawat inap no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu pulang (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+				)
+			}
 		}
 		return nil
 	}
