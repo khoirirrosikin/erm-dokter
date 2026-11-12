@@ -725,10 +725,13 @@ func (r *repository) GetWaktuRegistrasi(ctx context.Context, noRawat string) (st
 func (r *repository) GetInfoRegistrasi(ctx context.Context, noRawat string) (*InfoRegistrasiPasien, error) {
 	query := `
 		SELECT 
-			DATE_FORMAT(tgl_registrasi, '%Y-%m-%d') AS tgl_registrasi,
-			jam_reg,
+			COALESCE(DATE_FORMAT(tgl_registrasi, '%Y-%m-%d'), '') AS tgl_registrasi,
+			COALESCE(jam_reg, '') AS jam_reg,
 			kd_pj,
-			status_bayar
+			status_bayar,
+			COALESCE(kd_dokter, '') AS kd_dokter,
+			COALESCE(stts, '') AS stts,
+			COALESCE(status_lanjut, '') AS status_lanjut
 		FROM reg_periksa
 		WHERE no_rawat = ?
 	`
@@ -738,6 +741,9 @@ func (r *repository) GetInfoRegistrasi(ctx context.Context, noRawat string) (*In
 		&info.JamRegistrasi,
 		&info.KodePenjamin,
 		&info.StatusBayar,
+		&info.KodeDokter,
+		&info.StatusPemeriksaan,
+		&info.StatusLanjut,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

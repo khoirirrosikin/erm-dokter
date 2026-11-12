@@ -63,6 +63,9 @@ type InfoRegistrasiPasien struct {
 	JamRegistrasi     string
 	KodePenjamin      string
 	StatusBayar       string
+	KodeDokter        string
+	StatusPemeriksaan string
+	StatusLanjut      string
 }
 
 type OpsiReferensi struct {

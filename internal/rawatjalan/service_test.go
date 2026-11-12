@@ -600,3 +600,29 @@ func TestService_UpdateStatusPasien(t *testing.T) {
 	})
 }
 
+func TestService_CekAksesKunjungan(t *testing.T) {
+	log := logger.New()
+	ctx := context.Background()
+
+	t.Run("Rejects empty no_rawat", func(t *testing.T) {
+		svc := rawatjalan.NewService(&mockRepository{}, log)
+		_, _, err := svc.CekAksesKunjungan(ctx, "   ", "D001")
+		if err == nil {
+			t.Fatal("expected BusinessError for empty no_rawat")
+		}
+	})
+
+	t.Run("Delegates trimmed no_rawat and kode_dokter to repository", func(t *testing.T) {
+		repo := &mockRepository{
+			cekAksesKunjunganFunc: func(_ context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+				return noRawat == "2026/11/12/000001", kodeDokter == "D002", nil
+			},
+		}
+		svc := rawatjalan.NewService(repo, log)
+		exists, authorized, err := svc.CekAksesKunjungan(ctx, " 2026/11/12/000001 ", " D002 ")
+		if err != nil || !exists || !authorized {
+			t.Fatalf("expected exists=true authorized=true, got exists=%v authorized=%v err=%v", exists, authorized, err)
+		}
+	})
+}
+

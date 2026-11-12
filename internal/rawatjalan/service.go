@@ -21,6 +21,7 @@ type Service interface {
 	RiwayatKunjunganPasien(ctx context.Context, noRM string) ([]KunjunganRawatJalan, error)
 	GetWaktuRegistrasi(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	GetInfoRegistrasi(ctx context.Context, noRawat string) (*InfoRegistrasiPasien, error)
+	CekAksesKunjungan(ctx context.Context, noRawat string, kodeDokter string) (exists bool, authorized bool, err error)
 	PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*HasilPanggilAntrean, error)
 	UpdateStatusPasien(ctx context.Context, noRawat string, kodeDokter string, req UpdateStatusPasienRequest) (*HasilUpdateStatusPasien, error)
 
@@ -113,6 +114,14 @@ func (s *service) GetInfoRegistrasi(ctx context.Context, noRawat string) (*InfoR
 		return nil, apperror.NewNotFoundError("Data kunjungan pasien tidak ditemukan")
 	}
 	return infoReg, nil
+}
+
+func (s *service) CekAksesKunjungan(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+	noRawat = strings.TrimSpace(noRawat)
+	if noRawat == "" {
+		return false, false, apperror.NewBusinessError("Nomor rawat wajib diisi")
+	}
+	return s.repo.CekAksesKunjungan(ctx, noRawat, strings.TrimSpace(kodeDokter))
 }
 
 func (s *service) DaftarStatusPemeriksaan(ctx context.Context) []OpsiReferensi {

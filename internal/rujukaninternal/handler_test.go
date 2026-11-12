@@ -20,7 +20,7 @@ type mockRujukanService struct {
 	daftarOpsiFn    func(ctx context.Context, kodeDokterLogin string, keyword string) ([]rujukaninternal.OpsiPoliDokter, error)
 	daftarRujukanFn func(ctx context.Context, noRawat string) ([]rujukaninternal.RujukanInternal, error)
 	simpanRujukanFn func(ctx context.Context, kodeDokterLogin, noRawat, targetKodePoli, targetKodeDokter string) (*rujukaninternal.RujukanInternal, error)
-	hapusRujukanFn  func(ctx context.Context, kodeDokterLogin, noRawat, targetKodeDokter string) error
+	hapusRujukanFn  func(ctx context.Context, kodeDokterLogin, noRawat, targetKodePoli, targetKodeDokter string) error
 }
 
 func (m *mockRujukanService) DaftarOpsiPoliDokter(ctx context.Context, kodeDokterLogin string, keyword string) ([]rujukaninternal.OpsiPoliDokter, error) {
@@ -44,9 +44,9 @@ func (m *mockRujukanService) SimpanRujukanInternal(ctx context.Context, kodeDokt
 	return nil, nil
 }
 
-func (m *mockRujukanService) HapusRujukanInternal(ctx context.Context, kodeDokterLogin, noRawat, targetKodeDokter string) error {
+func (m *mockRujukanService) HapusRujukanInternal(ctx context.Context, kodeDokterLogin, noRawat, targetKodePoli, targetKodeDokter string) error {
 	if m.hapusRujukanFn != nil {
-		return m.hapusRujukanFn(ctx, kodeDokterLogin, noRawat, targetKodeDokter)
+		return m.hapusRujukanFn(ctx, kodeDokterLogin, noRawat, targetKodePoli, targetKodeDokter)
 	}
 	return nil
 }
@@ -62,6 +62,8 @@ func TestRujukanInternalHandler(t *testing.T) {
 	encKunjungan, _ := crypto.Encrypt("2026/09/03/000001", testEncKey)
 	encRujukan, _ := crypto.Encrypt("2026/09/03/000001~INT~DR02", testEncKey)
 	encTujuan, _ := crypto.Encrypt("INT~DR02", testEncKey)
+
+	var capturedDeletePoli, capturedDeleteDokter string
 
 	mockSvc := &mockRujukanService{
 		daftarOpsiFn: func(ctx context.Context, kodeDokterLogin string, keyword string) ([]rujukaninternal.OpsiPoliDokter, error) {
@@ -98,7 +100,9 @@ func TestRujukanInternalHandler(t *testing.T) {
 				},
 			}, nil
 		},
-		hapusRujukanFn: func(ctx context.Context, kodeDokterLogin, noRawat, targetKodeDokter string) error {
+		hapusRujukanFn: func(ctx context.Context, kodeDokterLogin, noRawat, targetKodePoli, targetKodeDokter string) error {
+			capturedDeletePoli = targetKodePoli
+			capturedDeleteDokter = targetKodeDokter
 			return nil
 		},
 	}
@@ -141,13 +145,16 @@ func TestRujukanInternalHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("HapusRujukanInternal", func(t *testing.T) {
+	t.Run("HapusRujukanInternal forwards KodePoli and KodeDokter", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rujukan-internal/"+encKunjungan+"/"+encRujukan, nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("Expected status 200, got %d", rr.Code)
+		}
+		if capturedDeletePoli != "INT" || capturedDeleteDokter != "DR02" {
+			t.Fatalf("expected KodePoli=INT and KodeDokter=DR02, got poli=%q dokter=%q", capturedDeletePoli, capturedDeleteDokter)
 		}
 	})
 }

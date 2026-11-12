@@ -378,3 +378,23 @@ func TestSortAntrean_DeterministicTieBreaker(t *testing.T) {
 		t.Errorf("expected tied Belum items ordered by earliest registration time, got %s then %s", items[1].NoRawat, items[2].NoRawat)
 	}
 }
+
+func TestGetInfoRegistrasi_ScansExtendedVisitMetadata(t *testing.T) {
+	db, _ := openStubRawatJalanDB(t, func(_ string, _ []driver.NamedValue) (driver.Rows, error) {
+		return &stubRows{
+			cols: []string{"tgl_registrasi", "jam_reg", "kd_pj", "status_bayar", "kd_dokter", "stts", "status_lanjut"},
+			data: [][]driver.Value{
+				{"2026-11-12", "08:30:00", "BPJ", "Belum Bayar", "DR001", "Belum", "Ranap"},
+			},
+		}, nil
+	})
+
+	repo := NewRepository(db)
+	info, err := repo.GetInfoRegistrasi(context.Background(), "2026/11/12/000001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info == nil || info.KodeDokter != "DR001" || info.StatusPemeriksaan != "Belum" || info.StatusLanjut != "Ranap" {
+		t.Fatalf("unexpected InfoRegistrasiPasien: %+v", info)
+	}
+}

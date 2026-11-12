@@ -163,7 +163,7 @@ func (h *Handler) HapusRujukanInternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.HapusRujukanInternal(r.Context(), kodeDokter, noRawat, parsedId.KodeDokter); err != nil {
+	if err := h.service.HapusRujukanInternal(r.Context(), kodeDokter, noRawat, parsedId.KodePoli, parsedId.KodeDokter); err != nil {
 		apperror.HandleError(w, err)
 		return
 	}

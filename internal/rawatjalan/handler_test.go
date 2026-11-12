@@ -24,6 +24,7 @@ type mockRawatJalanService struct {
 	riwayatKunjunganPasienFn func(ctx context.Context, noRM string) ([]rawatjalan.KunjunganRawatJalan, error)
 	getWaktuRegistrasiFn     func(ctx context.Context, noRawat string) (tanggal string, jam string, exists bool, err error)
 	getInfoRegistrasiFn      func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error)
+	cekAksesKunjunganFn      func(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error)
 	panggilAntreanFn         func(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*rawatjalan.HasilPanggilAntrean, error)
 	updateStatusPasienFn     func(ctx context.Context, noRawat string, kodeDokter string, req rawatjalan.UpdateStatusPasienRequest) (*rawatjalan.HasilUpdateStatusPasien, error)
 }
@@ -66,6 +67,13 @@ func (m *mockRawatJalanService) GetInfoRegistrasi(ctx context.Context, noRawat s
 		KodePenjamin:      "UMU",
 		StatusBayar:       "Belum Bayar",
 	}, nil
+}
+
+func (m *mockRawatJalanService) CekAksesKunjungan(ctx context.Context, noRawat string, kodeDokter string) (bool, bool, error) {
+	if m.cekAksesKunjunganFn != nil {
+		return m.cekAksesKunjunganFn(ctx, noRawat, kodeDokter)
+	}
+	return true, true, nil
 }
 
 func (m *mockRawatJalanService) PanggilAntrean(ctx context.Context, noRawat string, kdPoli string, kodeDokter string) (*rawatjalan.HasilPanggilAntrean, error) {
