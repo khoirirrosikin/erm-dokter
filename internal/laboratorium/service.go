@@ -69,6 +69,9 @@ func NewService(
 	kodeBerkasPK, kodeBerkasPA, kodeBerkasMB []string,
 	log *logger.Logger,
 ) Service {
+	if maxEditJam <= 0 {
+		maxEditJam = 48
+	}
 	baseURL := ""
 	if urlBerkasDigital != "" {
 		baseURL = strings.TrimRight(urlBerkasDigital, "/") + "/"
@@ -185,6 +188,9 @@ func (s *service) fetchBerkasDigitalKunjungan(ctx context.Context, noRawat strin
 			continue
 		}
 		fullURL := s.berkasSvc.BuildFullURL(b.LokasiFile)
+		if fullURL == "" {
+			continue
+		}
 		berkasDigital = append(berkasDigital, berkasdigital.BerkasDigital{
 			Kode:       b.Kode,
 			NamaBerkas: b.NamaBerkas,
@@ -218,6 +224,51 @@ func (s *service) validasiAksesDanStatusPermintaanLab(header PermintaanLabHeader
 		return apperror.NewForbiddenError(fmt.Sprintf("Permintaan laboratorium sudah diproses oleh petugas, tidak dapat %s", aksi))
 	}
 
+	return nil
+}
+
+func (s *service) cekStatusBayarItemLab(noPermintaan, aksi, namaItem, statusBayar string) error {
+	if strings.EqualFold(strings.TrimSpace(statusBayar), "Sudah") {
+		s.log.Warn("Percobaan %s permintaan laboratorium %s ditolak: pemeriksaan '%s' telah dibayar", aksi, noPermintaan, namaItem)
+		return apperror.NewForbiddenError(fmt.Sprintf("Pemeriksaan laboratorium sudah dibayar, tidak dapat %s", aksi))
+	}
+	return nil
+}
+
+func (s *service) validasiStatusBayarPK(noPermintaan, aksi string, items []PemeriksaanLabPKItem) error {
+	for _, p := range items {
+		if err := s.cekStatusBayarItemLab(noPermintaan, aksi, p.NamaTindakan, p.StatusBayar); err != nil {
+			return err
+		}
+		for _, t := range p.DetailTemplate {
+			if err := s.cekStatusBayarItemLab(noPermintaan, aksi, t.NamaPemeriksaan, t.StatusBayar); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *service) validasiStatusBayarPA(noPermintaan, aksi string, items []PemeriksaanLabPAItem) error {
+	for _, p := range items {
+		if err := s.cekStatusBayarItemLab(noPermintaan, aksi, p.NamaTindakan, p.StatusBayar); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *service) validasiStatusBayarMB(noPermintaan, aksi string, items []PemeriksaanLabMBItem) error {
+	for _, p := range items {
+		if err := s.cekStatusBayarItemLab(noPermintaan, aksi, p.NamaTindakan, p.StatusBayar); err != nil {
+			return err
+		}
+		for _, t := range p.DetailTemplate {
+			if err := s.cekStatusBayarItemLab(noPermintaan, aksi, t.NamaPemeriksaan, t.StatusBayar); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

@@ -1970,3 +1970,290 @@ func TestService_UpdateAndHapusPermintaanLab_ErrNoRowsMapsToNotFound(t *testing.
 		}
 	})
 }
+
+func TestService_UpdateAndHapusPermintaanLab_LockedWhenPaid(t *testing.T) {
+	log := logger.New()
+	mockBerkas := &mockBerkasService{}
+	mockRawatJalan := &mockRawatJalanService{}
+	mockRawatInap := &mockRawatInapService{}
+	mockTindakan := &mockTindakanService{}
+
+	nowStr := time.Now().Format("2006-01-02")
+	jamNowStr := time.Now().Format("15:04:05")
+	noRawat := "2026/09/04/000001"
+
+	baseHeader := func(noPermintaan string) laboratorium.PermintaanLabHeader {
+		return laboratorium.PermintaanLabHeader{
+			NoPermintaan:      noPermintaan,
+			NoRawat:           noRawat,
+			KodeDokterPerujuk: "DR01",
+			TanggalSampel:     "0000-00-00",
+			TanggalHasil:      "0000-00-00",
+			Status:            "ralan",
+		}
+	}
+
+	assertForbidden := func(t *testing.T, label string, err error) {
+		t.Helper()
+		var forbidden *apperror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("%s: expected *apperror.ForbiddenError, got %T (%v)", label, err, err)
+		}
+	}
+
+	t.Run("PK locked when Pemeriksaan.StatusBayar is Sudah", func(t *testing.T) {
+		repoMutated := false
+		mockRepo := &mockRepository{
+			detailPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabPK, error) {
+				return &laboratorium.DetailPermintaanLabPK{
+					PermintaanLabPK: laboratorium.PermintaanLabPK{PermintaanLabHeader: baseHeader(noPermintaan)},
+					Pemeriksaan: []laboratorium.PemeriksaanLabPKItem{
+						{KodeTindakan: "PK01", NamaTindakan: "Darah Lengkap", StatusBayar: "Sudah"},
+					},
+				}, nil
+			},
+			updatePermintaanLabPKFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabPKRequest, kodeTindakanList []string, templateMap map[string][]int) error {
+				repoMutated = true
+				return nil
+			},
+			hapusPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) error {
+				repoMutated = true
+				return nil
+			},
+		}
+		svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+		_, err := svc.UpdatePermintaanLabPK(context.Background(), "DR01", noRawat, "PK001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPKRequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{NoRawat: noRawat, TanggalPermintaan: nowStr, JamPermintaan: jamNowStr, DiagnosaKlinis: "Febris"},
+			Pemeriksaan:                []laboratorium.ItemPemeriksaanLabPKRequest{{KodeTindakan: "PK01"}},
+		})
+		assertForbidden(t, "UpdatePermintaanLabPK", err)
+
+		err = svc.HapusPermintaanLabPK(context.Background(), noRawat, "PK001", shared.StatusLanjutRawatJalan, "DR01")
+		assertForbidden(t, "HapusPermintaanLabPK", err)
+
+		if repoMutated {
+			t.Fatal("repository Update/Hapus should not be called when order is already paid")
+		}
+	})
+
+	t.Run("PK locked when DetailTemplate.StatusBayar is Sudah", func(t *testing.T) {
+		repoMutated := false
+		mockRepo := &mockRepository{
+			detailPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabPK, error) {
+				return &laboratorium.DetailPermintaanLabPK{
+					PermintaanLabPK: laboratorium.PermintaanLabPK{PermintaanLabHeader: baseHeader(noPermintaan)},
+					Pemeriksaan: []laboratorium.PemeriksaanLabPKItem{
+						{
+							KodeTindakan: "PK01",
+							NamaTindakan: "Darah Lengkap",
+							StatusBayar:  "Belum",
+							DetailTemplate: []laboratorium.DetailTemplateLabPKItem{
+								{IdTemplate: "10", NamaPemeriksaan: "Hemoglobin", StatusBayar: "Sudah"},
+							},
+						},
+					},
+				}, nil
+			},
+			updatePermintaanLabPKFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabPKRequest, kodeTindakanList []string, templateMap map[string][]int) error {
+				repoMutated = true
+				return nil
+			},
+			hapusPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) error {
+				repoMutated = true
+				return nil
+			},
+		}
+		svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+		_, err := svc.UpdatePermintaanLabPK(context.Background(), "DR01", noRawat, "PK001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPKRequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{NoRawat: noRawat, TanggalPermintaan: nowStr, JamPermintaan: jamNowStr, DiagnosaKlinis: "Febris"},
+			Pemeriksaan:                []laboratorium.ItemPemeriksaanLabPKRequest{{KodeTindakan: "PK01"}},
+		})
+		assertForbidden(t, "UpdatePermintaanLabPK template paid", err)
+
+		err = svc.HapusPermintaanLabPK(context.Background(), noRawat, "PK001", shared.StatusLanjutRawatJalan, "DR01")
+		assertForbidden(t, "HapusPermintaanLabPK template paid", err)
+
+		if repoMutated {
+			t.Fatal("repository Update/Hapus should not be called when template is already paid")
+		}
+	})
+
+	t.Run("PA locked when Pemeriksaan.StatusBayar is Sudah", func(t *testing.T) {
+		repoMutated := false
+		mockRepo := &mockRepository{
+			detailPermintaanLabPAFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabPA, error) {
+				return &laboratorium.DetailPermintaanLabPA{
+					PermintaanLabPA: laboratorium.PermintaanLabPA{PermintaanLabHeader: baseHeader(noPermintaan)},
+					Pemeriksaan: []laboratorium.PemeriksaanLabPAItem{
+						{KodeTindakan: "PA01", NamaTindakan: "Biopsi Jaringan", StatusBayar: "Sudah"},
+					},
+				}, nil
+			},
+			updatePermintaanLabPAFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabPARequest, kodeTindakanList []string) error {
+				repoMutated = true
+				return nil
+			},
+			hapusPermintaanLabPAFn: func(ctx context.Context, noPermintaan string) error {
+				repoMutated = true
+				return nil
+			},
+		}
+		svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+		_, err := svc.UpdatePermintaanLabPA(context.Background(), "DR01", noRawat, "PA001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPARequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{NoRawat: noRawat, TanggalPermintaan: nowStr, JamPermintaan: jamNowStr, DiagnosaKlinis: "Tumor Mammae"},
+			Pemeriksaan:                []laboratorium.ItemPemeriksaanLabPARequest{{KodeTindakan: "PA01"}},
+		})
+		assertForbidden(t, "UpdatePermintaanLabPA", err)
+
+		err = svc.HapusPermintaanLabPA(context.Background(), noRawat, "PA001", shared.StatusLanjutRawatJalan, "DR01")
+		assertForbidden(t, "HapusPermintaanLabPA", err)
+
+		if repoMutated {
+			t.Fatal("repository Update/Hapus should not be called when PA order is already paid")
+		}
+	})
+
+	t.Run("MB locked when Pemeriksaan or DetailTemplate StatusBayar is Sudah", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			items []laboratorium.PemeriksaanLabMBItem
+		}{
+			{
+				name: "pemeriksaan paid",
+				items: []laboratorium.PemeriksaanLabMBItem{
+					{KodeTindakan: "MB01", NamaTindakan: "Kultur Darah", StatusBayar: "Sudah"},
+				},
+			},
+			{
+				name: "detail template paid",
+				items: []laboratorium.PemeriksaanLabMBItem{
+					{
+						KodeTindakan: "MB01",
+						NamaTindakan: "Kultur Darah",
+						StatusBayar:  "Belum",
+						DetailTemplate: []laboratorium.DetailTemplateLabMBItem{
+							{IdTemplate: "20", NamaPemeriksaan: "Sensitivitas", StatusBayar: "Sudah"},
+						},
+					},
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				repoMutated := false
+				mockRepo := &mockRepository{
+					detailPermintaanLabMBFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabMB, error) {
+						return &laboratorium.DetailPermintaanLabMB{
+							PermintaanLabMB: laboratorium.PermintaanLabMB{PermintaanLabHeader: baseHeader(noPermintaan)},
+							Pemeriksaan:     tc.items,
+						}, nil
+					},
+					updatePermintaanLabMBFn: func(ctx context.Context, noPermintaan string, req laboratorium.SimpanPermintaanLabMBRequest, kodeTindakanList []string, templateMap map[string][]int) error {
+						repoMutated = true
+						return nil
+					},
+					hapusPermintaanLabMBFn: func(ctx context.Context, noPermintaan string) error {
+						repoMutated = true
+						return nil
+					},
+				}
+				svc := laboratorium.NewService(mockRepo, mockBerkas, mockRawatJalan, mockRawatInap, mockTindakan, 48, testURLBerkas, nil, nil, nil, log)
+
+				_, err := svc.UpdatePermintaanLabMB(context.Background(), "DR01", noRawat, "MB001", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabMBRequest{
+					PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{NoRawat: noRawat, TanggalPermintaan: nowStr, JamPermintaan: jamNowStr, DiagnosaKlinis: "Sepsis"},
+					Pemeriksaan:                []laboratorium.ItemPemeriksaanLabMBRequest{{KodeTindakan: "MB01"}},
+				})
+				assertForbidden(t, "UpdatePermintaanLabMB", err)
+
+				err = svc.HapusPermintaanLabMB(context.Background(), noRawat, "MB001", shared.StatusLanjutRawatJalan, "DR01")
+				assertForbidden(t, "HapusPermintaanLabMB", err)
+
+				if repoMutated {
+					t.Fatal("repository Update/Hapus should not be called when MB order is already paid")
+				}
+			})
+		}
+	})
+}
+
+func TestNewService_MaxEditJamDefaultFallback(t *testing.T) {
+	log := logger.New()
+	noRawat := "2026/09/03/000099"
+	now := time.Now()
+
+	mockRepo := &mockRepository{
+		simpanPermintaanLabPKFn: func(ctx context.Context, noRawat string, kodeDokter string, statusLanjut shared.StatusLanjut, req laboratorium.SimpanPermintaanLabPKRequest, kodeTindakanList []string, templateMap map[string][]int) (string, error) {
+			return "PK202609030001", nil
+		},
+		detailPermintaanLabPKFn: func(ctx context.Context, noPermintaan string) (*laboratorium.DetailPermintaanLabPK, error) {
+			return &laboratorium.DetailPermintaanLabPK{
+				PermintaanLabPK: laboratorium.PermintaanLabPK{
+					PermintaanLabHeader: laboratorium.PermintaanLabHeader{
+						NoPermintaan: noPermintaan,
+						NoRawat:      noRawat,
+						Status:       "ralan",
+					},
+				},
+			}, nil
+		},
+	}
+	mockBerkas := &mockBerkasService{}
+	mockRawatInap := &mockRawatInapService{
+		cekStatusKamarInapFn: func(ctx context.Context, nr string) (bool, bool, error) {
+			return false, false, nil
+		},
+	}
+	mockTindakan := &mockTindakanService{}
+
+	reg2hAgo := now.Add(-2 * time.Hour)
+	svc := laboratorium.NewService(mockRepo, mockBerkas, &mockRawatJalanService{
+		getInfoRegistrasiFn: func(ctx context.Context, nr string) (*rawatjalan.InfoRegistrasiPasien, error) {
+			return &rawatjalan.InfoRegistrasiPasien{
+				TanggalRegistrasi: reg2hAgo.Format("2006-01-02"),
+				JamRegistrasi:     reg2hAgo.Format("15:04:05"),
+				KodePenjamin:      "UMU",
+				StatusBayar:       "Belum Bayar",
+			}, nil
+		},
+	}, mockRawatInap, mockTindakan, 0, testURLBerkas, nil, nil, nil, log)
+
+	_, err := svc.SimpanPermintaanLabPK(context.Background(), "DR01", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPKRequest{
+		PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+			NoRawat:           noRawat,
+			TanggalPermintaan: now.Format("2006-01-02"),
+			JamPermintaan:     now.Format("15:04:05"),
+			DiagnosaKlinis:    "Observasi Febris",
+		},
+		Pemeriksaan: []laboratorium.ItemPemeriksaanLabPKRequest{{KodeTindakan: "LAB01"}},
+	})
+	if err != nil {
+		t.Fatalf("expected maxEditJam=0 to fallback to 48h and allow 2h-old visit, got error: %v", err)
+	}
+
+	reg72hAgo := now.Add(-72 * time.Hour)
+	svcExpired := laboratorium.NewService(mockRepo, mockBerkas, &mockRawatJalanService{
+		getInfoRegistrasiFn: func(ctx context.Context, nr string) (*rawatjalan.InfoRegistrasiPasien, error) {
+			return &rawatjalan.InfoRegistrasiPasien{
+				TanggalRegistrasi: reg72hAgo.Format("2006-01-02"),
+				JamRegistrasi:     reg72hAgo.Format("15:04:05"),
+				KodePenjamin:      "UMU",
+				StatusBayar:       "Belum Bayar",
+			}, nil
+		},
+	}, mockRawatInap, mockTindakan, -5, testURLBerkas, nil, nil, nil, log)
+
+	_, err = svcExpired.SimpanPermintaanLabPK(context.Background(), "DR01", shared.StatusLanjutRawatJalan, laboratorium.SimpanPermintaanLabPKRequest{
+		PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+			NoRawat:           noRawat,
+			TanggalPermintaan: now.Format("2006-01-02"),
+			JamPermintaan:     now.Format("15:04:05"),
+			DiagnosaKlinis:    "Observasi Febris",
+		},
+		Pemeriksaan: []laboratorium.ItemPemeriksaanLabPKRequest{{KodeTindakan: "LAB01"}},
+	})
+	if err == nil {
+		t.Fatal("expected maxEditJam=-5 to fallback to 48h and reject 72h-old visit, got nil")
+	}
+}

@@ -127,6 +127,13 @@ func (r *repository) queryRiwayatLabMB(ctx context.Context, whereClause string, 
 	if err = rows.Err(); err != nil {
 		return nil, 0, err
 	}
+	if err = rows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	if err = r.hydrateDetailPKList(ctx, list); err != nil {
+		return nil, 0, err
+	}
 
 	return list, total, nil
 }
@@ -179,7 +186,12 @@ func (r *repository) DetailHasilLabMB(ctx context.Context, noRawat string, kodeT
 		return nil, err
 	}
 
-	item.DetailPK = make([]ItemHasilLabPK, 0)
+	detailPK, err := r.fetchDetailPK(ctx, noRawat, kodeTindakan, tanggalPeriksa, jamPeriksa)
+	if err != nil {
+		return nil, err
+	}
+	item.DetailPK = detailPK
+
 	return &item, nil
 }
 

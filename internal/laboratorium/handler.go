@@ -260,10 +260,13 @@ func (h *Handler) encryptPermintaanLabHeader(header *PermintaanLabHeader, defaul
 func (h *Handler) encryptBerkasDigitalList(list []berkasdigital.BerkasDigital) {
 	for i := range list {
 		if list[i].IdBerkas != "" {
-			encId, err := crypto.Encrypt(list[i].IdBerkas, h.encryptionKey)
+			encId, err := crypto.Encrypt(berkasdigital.FormatTokenPayload(list[i].IdBerkas), h.encryptionKey)
 			if err == nil {
 				list[i].IdBerkas = encId
 				list[i].UrlBerkas = "/api/v1/berkas-digital/" + encId
+			} else {
+				list[i].IdBerkas = ""
+				list[i].UrlBerkas = ""
 			}
 		}
 	}

@@ -242,6 +242,91 @@ func (r *repository) fetchDetailPK(ctx context.Context, noRawat, kodeTindakan, t
 	return details, nil
 }
 
+type periksaLabKey struct {
+	noRawat        string
+	kodeTindakan   string
+	tanggalPeriksa string
+	jamPeriksa     string
+}
+
+func (r *repository) hydrateDetailPKList(ctx context.Context, list []HasilLaboratorium) error {
+	if len(list) == 0 {
+		return nil
+	}
+
+	indexByKey := make(map[periksaLabKey][]int, len(list))
+	clauses := make([]string, 0, len(list))
+	args := make([]any, 0, len(list)*4)
+
+	for i := range list {
+		list[i].DetailPK = make([]ItemHasilLabPK, 0)
+		key := periksaLabKey{
+			noRawat:        list[i].NoRawat,
+			kodeTindakan:   list[i].KodeTindakan,
+			tanggalPeriksa: list[i].TanggalPeriksa,
+			jamPeriksa:     list[i].JamPeriksa,
+		}
+		if _, exists := indexByKey[key]; !exists {
+			clauses = append(clauses, "(dpl.no_rawat = ? AND dpl.kd_jenis_prw = ? AND dpl.tgl_periksa = ? AND dpl.jam = ?)")
+			args = append(args, key.noRawat, key.kodeTindakan, key.tanggalPeriksa, key.jamPeriksa)
+		}
+		indexByKey[key] = append(indexByKey[key], i)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			dpl.no_rawat,
+			dpl.kd_jenis_prw AS kode_tindakan,
+			COALESCE(DATE_FORMAT(dpl.tgl_periksa, '%%Y-%%m-%%d'), '') AS tgl_periksa,
+			dpl.jam AS jam_periksa,
+			COALESCE(dpl.id_template, 0) AS id_template,
+			COALESCE(tl.Pemeriksaan, '') AS nama_pemeriksaan,
+			COALESCE(dpl.nilai, '') AS nilai,
+			COALESCE(tl.satuan, '') AS satuan,
+			COALESCE(dpl.nilai_rujukan, '') AS nilai_rujukan,
+			COALESCE(dpl.keterangan, '') AS keterangan
+		FROM detail_periksa_lab dpl
+		LEFT JOIN template_laboratorium tl ON tl.id_template = dpl.id_template
+		WHERE %s
+		ORDER BY tl.urut ASC, dpl.id_template ASC
+	`, strings.Join(clauses, " OR "))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key periksaLabKey
+		var idTemplate int
+		var d ItemHasilLabPK
+		err = rows.Scan(
+			&key.noRawat,
+			&key.kodeTindakan,
+			&key.tanggalPeriksa,
+			&key.jamPeriksa,
+			&idTemplate,
+			&d.NamaPemeriksaan,
+			&d.Nilai,
+			&d.Satuan,
+			&d.NilaiRujukan,
+			&d.Keterangan,
+		)
+		if err != nil {
+			return err
+		}
+		if idTemplate > 0 {
+			d.IdTemplate = strconv.Itoa(idTemplate)
+		}
+		for _, idx := range indexByKey[key] {
+			list[idx].DetailPK = append(list[idx].DetailPK, d)
+		}
+	}
+
+	return rows.Err()
+}
+
 func (r *repository) generateNoPermintaanPK(ctx context.Context, tx *sql.Tx, tanggalPermintaan string) (string, error) {
 	parsedDate, err := time.Parse("2006-01-02", strings.TrimSpace(tanggalPermintaan))
 	prefixDate := time.Now().Format("20060102")

@@ -48,6 +48,10 @@ func (s *service) UpdatePermintaanLabPA(ctx context.Context, kodeDokterLogin, no
 		return nil, err
 	}
 
+	if err := s.validasiStatusBayarPA(detail.NoPermintaan, "diubah", detail.Pemeriksaan); err != nil {
+		return nil, err
+	}
+
 	if err := s.validasiRegistrasiDanStatus(ctx, req.NoRawat, req.TanggalPermintaan, req.JamPermintaan, statusLanjut, "diubah"); err != nil {
 		return nil, err
 	}
@@ -157,6 +161,10 @@ func (s *service) HapusPermintaanLabPA(ctx context.Context, noRawat string, noPe
 	}
 
 	if err := s.validasiAksesDanStatusPermintaanLab(detail.PermintaanLabHeader, noRawat, kodeDokterLogin, statusLanjut, "dihapus"); err != nil {
+		return err
+	}
+
+	if err := s.validasiStatusBayarPA(detail.NoPermintaan, "dihapus", detail.Pemeriksaan); err != nil {
 		return err
 	}
 
