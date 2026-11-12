@@ -43,7 +43,7 @@ func main() {
 		Addr:         serverAddr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		WriteTimeout: 35 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

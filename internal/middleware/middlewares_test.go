@@ -2,12 +2,15 @@ package middleware_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"erm-dokter/internal/middleware"
+	"erm-dokter/internal/pkg/response"
 	"erm-dokter/internal/pkg/token"
 )
 
@@ -317,6 +320,111 @@ func TestTimeoutMiddleware(t *testing.T) {
 
 		if rr.Code != http.StatusGatewayTimeout {
 			t.Errorf("Expected status 504 Gateway Timeout, got %d", rr.Code)
+		}
+	})
+
+	t.Run("Preserves Outer & Handler Headers Under LoggingMiddleware", func(t *testing.T) {
+		inner := timeoutMw(func(w http.ResponseWriter, r *http.Request) {
+			if w.Header().Get("X-Logging-Middleware") != "true" {
+				t.Errorf("Expected X-Logging-Middleware=true inside handler")
+			}
+			w.Header().Set("X-Custom-Header", "erm-ok")
+			response.Created(w, "Data tersimpan", map[string]string{"id": "1"})
+		})
+		wrapped := middleware.LoggingMiddleware(inner)
+
+		req := httptest.NewRequest(http.MethodPost, "/items", nil)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("Expected status 201, got %d", rr.Code)
+		}
+		if rr.Header().Get("X-Custom-Header") != "erm-ok" {
+			t.Fatalf("Expected X-Custom-Header='erm-ok', got %q", rr.Header().Get("X-Custom-Header"))
+		}
+		if rr.Header().Get("X-Logging-Middleware") != "" {
+			t.Fatalf("Expected internal X-Logging-Middleware header stripped, got %q", rr.Header().Get("X-Logging-Middleware"))
+		}
+	})
+
+	t.Run("Partial Write & Concurrent Header Mutation On Timeout Never Corrupts 504 JSON", func(t *testing.T) {
+		shortTimeout := middleware.TimeoutMiddleware(15 * time.Millisecond)
+		handler := shortTimeout(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":true,"partial":`))
+			deadline := time.Now().Add(35 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				w.Header().Set("X-Race-Test", "value")
+				_, _ = w.Write([]byte("x"))
+				time.Sleep(time.Millisecond)
+			}
+		})
+
+		var wg sync.WaitGroup
+		for i := 0; i < 30; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req := httptest.NewRequest(http.MethodGet, "/partial-timeout", nil)
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, req)
+
+				if rr.Code != http.StatusGatewayTimeout {
+					t.Errorf("Expected status 504, got %d", rr.Code)
+					return
+				}
+				var parsed response.Response
+				if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+					t.Errorf("Expected pure valid 504 JSON, got corrupted body %q: %v", rr.Body.String(), err)
+					return
+				}
+				if parsed.Success || parsed.Message != "Request timeout" {
+					t.Errorf("Unexpected 504 payload: %+v", parsed)
+				}
+			}()
+		}
+		wg.Wait()
+	})
+
+	t.Run("Panic In Child Goroutine Recovered As Clean 500 JSON", func(t *testing.T) {
+		handler := middleware.LoggingMiddleware(timeoutMw(func(w http.ResponseWriter, r *http.Request) {
+			panic("unexpected nil pointer in handler")
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("Expected status 500 on recovered panic, got %d", rr.Code)
+		}
+		var parsed response.Response
+		if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+			t.Fatalf("Expected valid JSON 500 response, got %q: %v", rr.Body.String(), err)
+		}
+		if parsed.Success || parsed.Message != "Terjadi kesalahan pada server" {
+			t.Fatalf("Unexpected 500 payload: %+v", parsed)
+		}
+	})
+
+	t.Run("Client Context Canceled Does Not Write False 504", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		handler := timeoutMw(func(w http.ResponseWriter, r *http.Request) {
+			cancel()
+			<-r.Context().Done()
+			time.Sleep(10 * time.Millisecond)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/canceled", nil).WithContext(ctx)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code == http.StatusGatewayTimeout {
+			t.Fatalf("Expected client cancellation not to emit 504, got %d", rr.Code)
+		}
+		if rr.Body.Len() != 0 {
+			t.Fatalf("Expected empty body on client cancellation, got %q", rr.Body.String())
 		}
 	})
 }

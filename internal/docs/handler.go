@@ -229,6 +229,7 @@ func (h *Handler) getLatestModTime() time.Time {
 
 func (h *Handler) ServeLiveReload(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
