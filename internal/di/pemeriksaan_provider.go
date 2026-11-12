@@ -10,12 +10,14 @@ import (
 	"erm-dokter/internal/rawatjalan"
 )
 
-func providePemeriksaan(db *sql.DB, cfg *config.Config, log *logger.Logger) *pemeriksaan.Handler {
+func providePemeriksaan(
+	db *sql.DB,
+	cfg *config.Config,
+	log *logger.Logger,
+	rawatJalanSvc rawatjalan.Service,
+	rawatInapSvc rawatinap.Service,
+) *pemeriksaan.Handler {
 	repo := pemeriksaan.NewRepository(db)
-	rawatJalanRepo := rawatjalan.NewRepository(db)
-	rawatJalanSvc := rawatjalan.NewService(rawatJalanRepo, log)
-	rawatInapRepo := rawatinap.NewRepository(db)
-	rawatInapSvc := rawatinap.NewService(rawatInapRepo, log)
 	svc := pemeriksaan.NewService(repo, rawatJalanSvc, rawatInapSvc, cfg.MaxEditRekamMedisJam, log)
 	return pemeriksaan.NewHandler(svc, cfg.EncryptionKey)
 }

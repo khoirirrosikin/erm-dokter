@@ -44,18 +44,26 @@ func (c *ICDCache) NeedsRefresh(ttl time.Duration) bool {
 	return time.Since(snap.syncedAt) > ttl
 }
 
+func normalizeICDKode(kode string) string {
+	return strings.ToUpper(strings.TrimSpace(kode))
+}
+
 func (c *ICDCache) Load(icd10 []ICD10, icd9 []ICD9) {
 	c.syncMu.Lock()
 	defer c.syncMu.Unlock()
 
 	map10 := make(map[string]bool, len(icd10))
 	for _, item := range icd10 {
-		map10[item.Kode] = true
+		if key := normalizeICDKode(item.Kode); key != "" {
+			map10[key] = true
+		}
 	}
 
 	map9 := make(map[string]bool, len(icd9))
 	for _, item := range icd9 {
-		map9[item.Kode] = true
+		if key := normalizeICDKode(item.Kode); key != "" {
+			map9[key] = true
+		}
 	}
 
 	newSnap := &icdSnapshot{
@@ -123,7 +131,8 @@ func (c *ICDCache) CheckICD10(listKode []string) map[string]bool {
 
 	result := make(map[string]bool, len(listKode))
 	for _, kode := range listKode {
-		result[kode] = snap.icd10Map[kode]
+		key := normalizeICDKode(kode)
+		result[kode] = key != "" && snap.icd10Map[key]
 	}
 	return result
 }
@@ -136,7 +145,8 @@ func (c *ICDCache) CheckICD9(listKode []string) map[string]bool {
 
 	result := make(map[string]bool, len(listKode))
 	for _, kode := range listKode {
-		result[kode] = snap.icd9Map[kode]
+		key := normalizeICDKode(kode)
+		result[kode] = key != "" && snap.icd9Map[key]
 	}
 	return result
 }

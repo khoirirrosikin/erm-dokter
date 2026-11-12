@@ -13,14 +13,15 @@ import (
 	"erm-dokter/internal/rawatjalan"
 )
 
-func provideDiagnosa(db *sql.DB, cfg *config.Config, log *logger.Logger) *diagnosa.Handler {
+func provideDiagnosa(
+	db *sql.DB,
+	cfg *config.Config,
+	log *logger.Logger,
+	rawatJalanSvc rawatjalan.Service,
+	rawatInapSvc rawatinap.Service,
+	masterSvc master.Service,
+) *diagnosa.Handler {
 	repo := diagnosa.NewRepository(db)
-	rawatJalanRepo := rawatjalan.NewRepository(db)
-	rawatJalanSvc := rawatjalan.NewService(rawatJalanRepo, log)
-	rawatInapRepo := rawatinap.NewRepository(db)
-	rawatInapSvc := rawatinap.NewService(rawatInapRepo, log)
-	masterRepo := master.NewRepository(db)
-	masterSvc := master.NewService(masterRepo, log)
 	eklaimClient := eklaim.NewClient(
 		cfg.EKLAIMBaseURL,
 		cfg.EKLAIMEncryptionKey,

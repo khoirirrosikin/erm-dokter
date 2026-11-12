@@ -7,19 +7,21 @@ import (
 	"erm-dokter/internal/config"
 	"erm-dokter/internal/laboratorium"
 	"erm-dokter/internal/pkg/logger"
+	"erm-dokter/internal/rawatinap"
 	"erm-dokter/internal/rawatjalan"
 	"erm-dokter/internal/tindakan"
 )
 
-func provideLaboratorium(db *sql.DB, cfg *config.Config, log *logger.Logger) *laboratorium.Handler {
+func provideLaboratorium(
+	db *sql.DB,
+	cfg *config.Config,
+	log *logger.Logger,
+	berkasSvc berkasdigital.Service,
+	rawatJalanSvc rawatjalan.Service,
+	rawatInapSvc rawatinap.Service,
+	tindakanSvc tindakan.Service,
+) *laboratorium.Handler {
 	repo := laboratorium.NewRepository(db)
-	berkasRepo := berkasdigital.NewRepository(db)
-	berkasSvc := berkasdigital.NewService(berkasRepo, cfg.URLBerkasDigital, log)
-	rawatJalanRepo := rawatjalan.NewRepository(db)
-	rawatJalanSvc := rawatjalan.NewService(rawatJalanRepo, log)
-	rawatInapSvc := provideRawatInap(db, log)
-	tindakanRepo := tindakan.NewRepository(db)
-	tindakanSvc := tindakan.NewService(tindakanRepo, log)
 
 	svc := laboratorium.NewService(
 		repo,

@@ -2,11 +2,15 @@ package master
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/shared"
 )
+
+const defaultICDCacheTTL = 24 * time.Hour
 
 type Service interface {
 	DaftarPenjamin(ctx context.Context) ([]Penjamin, error)
@@ -22,16 +26,27 @@ type Service interface {
 }
 
 type service struct {
-	repo  Repository
-	log   *logger.Logger
-	cache *ICDCache
+	repo       Repository
+	log        *logger.Logger
+	cache      *ICDCache
+	cacheTTL   time.Duration
+	loadMu     sync.Mutex
+	refreshing atomic.Bool
 }
 
 func NewService(repo Repository, log *logger.Logger) Service {
+	return NewServiceWithTTL(repo, log, defaultICDCacheTTL)
+}
+
+func NewServiceWithTTL(repo Repository, log *logger.Logger, cacheTTL time.Duration) Service {
+	if cacheTTL <= 0 {
+		cacheTTL = defaultICDCacheTTL
+	}
 	return &service{
-		repo:  repo,
-		log:   log,
-		cache: NewICDCache(),
+		repo:     repo,
+		log:      log,
+		cache:    NewICDCache(),
+		cacheTTL: cacheTTL,
 	}
 }
 
@@ -84,6 +99,14 @@ func (s *service) ensureCacheLoaded(ctx context.Context) {
 	if s.cache.IsLoaded() {
 		return
 	}
+
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+
+	if s.cache.IsLoaded() {
+		return
+	}
+
 	icd10, err10 := s.repo.FetchAllICD10(ctx)
 	if err10 != nil {
 		s.log.Warn("Gagal memuat awal cache ICD-10: %v", err10)
@@ -99,7 +122,13 @@ func (s *service) ensureCacheLoaded(ctx context.Context) {
 }
 
 func (s *service) triggerBackgroundRefresh() {
+	if !s.refreshing.CompareAndSwap(false, true) {
+		return
+	}
+
 	go func() {
+		defer s.refreshing.Store(false)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -124,7 +153,7 @@ func (s *service) DaftarICD10(ctx context.Context, filter FilterMasterICD) ([]IC
 	}
 
 	if s.cache.IsLoaded() {
-		if s.cache.NeedsRefresh(24 * time.Hour) {
+		if s.cache.NeedsRefresh(s.cacheTTL) {
 			s.triggerBackgroundRefresh()
 		}
 		data, total := s.cache.SearchICD10(filter)
@@ -147,7 +176,7 @@ func (s *service) DaftarICD9(ctx context.Context, filter FilterMasterICD) ([]ICD
 	}
 
 	if s.cache.IsLoaded() {
-		if s.cache.NeedsRefresh(24 * time.Hour) {
+		if s.cache.NeedsRefresh(s.cacheTTL) {
 			s.triggerBackgroundRefresh()
 		}
 		data, total := s.cache.SearchICD9(filter)
@@ -170,6 +199,9 @@ func (s *service) CekKeberadaanICD10(ctx context.Context, listKode []string) (ma
 	}
 
 	if s.cache.IsLoaded() {
+		if s.cache.NeedsRefresh(s.cacheTTL) {
+			s.triggerBackgroundRefresh()
+		}
 		return s.cache.CheckICD10(listKode), nil
 	}
 
@@ -187,6 +219,9 @@ func (s *service) CekKeberadaanICD9(ctx context.Context, listKode []string) (map
 	}
 
 	if s.cache.IsLoaded() {
+		if s.cache.NeedsRefresh(s.cacheTTL) {
+			s.triggerBackgroundRefresh()
+		}
 		return s.cache.CheckICD9(listKode), nil
 	}
 

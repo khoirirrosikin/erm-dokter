@@ -1,15 +1,10 @@
 package di
 
 import (
-	"database/sql"
-
 	"erm-dokter/internal/config"
-	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/tindakan"
 )
 
-func provideTindakan(db *sql.DB, cfg *config.Config, log *logger.Logger) *tindakan.Handler {
-	repo := tindakan.NewRepository(db)
-	svc := tindakan.NewService(repo, log)
+func provideTindakan(svc tindakan.Service, cfg *config.Config) *tindakan.Handler {
 	return tindakan.NewHandler(svc, cfg.EncryptionKey)
 }

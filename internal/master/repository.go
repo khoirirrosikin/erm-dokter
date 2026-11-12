@@ -272,20 +272,17 @@ func (r *repository) DaftarICD9(ctx context.Context, filter FilterMasterICD) ([]
 }
 
 func (r *repository) CekKeberadaanICD10(ctx context.Context, listKode []string) (map[string]bool, error) {
-	result := make(map[string]bool)
+	result := make(map[string]bool, len(listKode))
 	if len(listKode) == 0 {
 		return result, nil
-	}
-
-	for _, kode := range listKode {
-		result[kode] = false
 	}
 
 	placeholders := make([]string, len(listKode))
 	args := make([]any, len(listKode))
 	for i, kode := range listKode {
+		result[kode] = false
 		placeholders[i] = "?"
-		args[i] = kode
+		args[i] = strings.TrimSpace(kode)
 	}
 
 	query := fmt.Sprintf(`SELECT kd_penyakit 
@@ -298,36 +295,41 @@ func (r *repository) CekKeberadaanICD10(ctx context.Context, listKode []string) 
 	}
 	defer rows.Close()
 
+	found := make(map[string]bool, len(listKode))
 	for rows.Next() {
 		var kode string
 		if err := rows.Scan(&kode); err != nil {
 			return nil, err
 		}
-		result[kode] = true
+		if key := normalizeICDKode(kode); key != "" {
+			found[key] = true
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
+	for _, kode := range listKode {
+		key := normalizeICDKode(kode)
+		result[kode] = key != "" && found[key]
+	}
+
 	return result, nil
 }
 
 func (r *repository) CekKeberadaanICD9(ctx context.Context, listKode []string) (map[string]bool, error) {
-	result := make(map[string]bool)
+	result := make(map[string]bool, len(listKode))
 	if len(listKode) == 0 {
 		return result, nil
-	}
-
-	for _, kode := range listKode {
-		result[kode] = false
 	}
 
 	placeholders := make([]string, len(listKode))
 	args := make([]any, len(listKode))
 	for i, kode := range listKode {
+		result[kode] = false
 		placeholders[i] = "?"
-		args[i] = kode
+		args[i] = strings.TrimSpace(kode)
 	}
 
 	query := fmt.Sprintf(`SELECT kode 
@@ -340,16 +342,24 @@ func (r *repository) CekKeberadaanICD9(ctx context.Context, listKode []string) (
 	}
 	defer rows.Close()
 
+	found := make(map[string]bool, len(listKode))
 	for rows.Next() {
 		var kode string
 		if err := rows.Scan(&kode); err != nil {
 			return nil, err
 		}
-		result[kode] = true
+		if key := normalizeICDKode(kode); key != "" {
+			found[key] = true
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	for _, kode := range listKode {
+		key := normalizeICDKode(kode)
+		result[kode] = key != "" && found[key]
 	}
 
 	return result, nil

@@ -9,10 +9,13 @@ import (
 	"erm-dokter/internal/rujukaninternal"
 )
 
-func provideRujukanInternal(db *sql.DB, cfg *config.Config, log *logger.Logger) *rujukaninternal.Handler {
+func provideRujukanInternal(
+	db *sql.DB,
+	cfg *config.Config,
+	log *logger.Logger,
+	rawatJalanSvc rawatjalan.Service,
+) *rujukaninternal.Handler {
 	repo := rujukaninternal.NewRepository(db)
-	rawatJalanRepo := rawatjalan.NewRepository(db)
-	rawatJalanSvc := rawatjalan.NewService(rawatJalanRepo, log)
 	svc := rujukaninternal.NewService(repo, rawatJalanSvc, cfg.MaxEditRekamMedisJam, log)
 	return rujukaninternal.NewHandler(svc, cfg.EncryptionKey)
 }
