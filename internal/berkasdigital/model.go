@@ -23,7 +23,13 @@ type BerkasDigitalPerawatan struct {
 
 type BerkasStream struct {
 	Body          io.ReadCloser
+	StatusCode    int
 	ContentType   string
 	ContentLength string
 	Filename      string
+	Disposition   string
+	AcceptRanges  string
+	ContentRange  string
+	ETag          string
+	LastModified  string
 }
