@@ -29,16 +29,38 @@ func NewRepository(db *sql.DB) Repository {
 	}
 }
 
-var orderByMapping = map[string]func(string) string{
-	"nama_obat":     func(dir string) string { return fmt.Sprintf("dtb.nama_brng %s", dir) },
-	"stok":          func(dir string) string { return fmt.Sprintf("stok %s", dir) },
-	"nama_depo":     func(dir string) string { return fmt.Sprintf("bg.nm_bangsal %s", dir) },
-	"nama_jenis":    func(dir string) string { return fmt.Sprintf("jn.nama %s", dir) },
-	"nama_golongan": func(dir string) string { return fmt.Sprintf("gb.nama %s", dir) },
-	"nama_kategori": func(dir string) string { return fmt.Sprintf("kb.nama %s", dir) },
+func buildOrderClause(orderBy, sortOrder string, hasDepo bool) string {
+	switch orderBy {
+	case "stok":
+		if hasDepo {
+			return fmt.Sprintf("gdb.stok %s, dtb.nama_brng ASC, dtb.kode_brng ASC", sortOrder)
+		}
+		return fmt.Sprintf("stok %s, dtb.nama_brng ASC, dtb.kode_brng ASC", sortOrder)
+	case "nama_depo":
+		if hasDepo {
+			return fmt.Sprintf("bg.nm_bangsal %s, dtb.nama_brng ASC, dtb.kode_brng ASC", sortOrder)
+		}
+		return fmt.Sprintf("dtb.nama_brng %s, dtb.kode_brng ASC", sortOrder)
+	case "nama_jenis":
+		return fmt.Sprintf("jn.nama %s, dtb.nama_brng ASC, dtb.kode_brng ASC", sortOrder)
+	case "nama_golongan":
+		return fmt.Sprintf("gb.nama %s, dtb.nama_brng ASC, dtb.kode_brng ASC", sortOrder)
+	case "nama_kategori":
+		return fmt.Sprintf("kb.nama %s, dtb.nama_brng ASC, dtb.kode_brng ASC", sortOrder)
+	default:
+		return fmt.Sprintf("dtb.nama_brng %s, dtb.kode_brng ASC", sortOrder)
+	}
 }
 
 func (r *repository) DaftarObat(ctx context.Context, filter FilterDaftarObat) ([]Obat, int64, error) {
+	orderBy := strings.ToLower(strings.TrimSpace(filter.OrderBy))
+	if orderBy == "" {
+		orderBy = "nama_obat"
+	}
+	sortOrder := "ASC"
+	if strings.EqualFold(strings.TrimSpace(filter.SortOrder), "DESC") {
+		sortOrder = "DESC"
+	}
 
 	var baseFrom string
 	var selectCols string
@@ -80,13 +102,18 @@ func (r *repository) DaftarObat(ctx context.Context, filter FilterDaftarObat) ([
 			INNER JOIN jenis jn ON dtb.kdjns = jn.kdjns
 			WHERE dtb.status = '1'`
 
-		selectCols = `SELECT 
+		stokExpr := "0 AS stok"
+		if orderBy == "stok" {
+			stokExpr = "COALESCE((SELECT SUM(gdb.stok) FROM gudangbarang gdb WHERE gdb.kode_brng = dtb.kode_brng AND " + shared.InClauseDepoFarmasi("gdb.kd_bangsal") + "), 0) AS stok"
+		}
+
+		selectCols = fmt.Sprintf(`SELECT 
 			dtb.kode_brng AS kode_obat,
 			dtb.nama_brng AS nama_obat,
 			dtb.letak_barang AS komposisi,
 			dtb.ralan AS harga,
 			dtb.kode_sat AS satuan,
-			0 AS stok,
+			%s,
 			dtb.kapasitas,
 			'' AS kode_depo,
 			'Semua Depo' AS nama_depo,
@@ -95,7 +122,7 @@ func (r *repository) DaftarObat(ctx context.Context, filter FilterDaftarObat) ([
 			dtb.kode_golongan AS kode_golongan,
 			gb.nama AS nama_golongan,
 			dtb.kode_kategori AS kode_kategori,
-			kb.nama AS nama_kategori `
+			kb.nama AS nama_kategori `, stokExpr)
 	}
 
 	if filter.Jenis != "" {
@@ -129,11 +156,7 @@ func (r *repository) DaftarObat(ctx context.Context, filter FilterDaftarObat) ([
 	countQuery := "SELECT COUNT(*) " + countFrom + countWhere
 	countArgs := r.buildCountArgs(filter)
 
-	builder, exists := orderByMapping[filter.OrderBy]
-	if !exists {
-		builder = orderByMapping["nama_obat"]
-	}
-	orderClause := " ORDER BY " + builder(filter.SortOrder)
+	orderClause := " ORDER BY " + buildOrderClause(orderBy, sortOrder, filter.Depo != "")
 	selectQuery := selectCols + baseFrom + whereClause + orderClause + " LIMIT ? OFFSET ?"
 	dataArgs := append(args, filter.Limit, filter.Offset())
 
@@ -191,7 +214,7 @@ func (r *repository) DaftarObat(ctx context.Context, filter FilterDaftarObat) ([
 	if cr.err != nil {
 		return nil, 0, cr.err
 	}
-	if filter.Depo == "" && len(listObat) > 0 {
+	if filter.Depo == "" && orderBy != "stok" && len(listObat) > 0 {
 		if err := r.hydrateStok(ctx, listObat); err != nil {
 			return nil, 0, err
 		}
