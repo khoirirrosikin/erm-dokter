@@ -7,8 +7,11 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
 
 	"erm-dokter/internal/pkg/crypto"
 	"erm-dokter/internal/shared"
@@ -365,6 +368,228 @@ func TestDetailHasilLabMB_LoadsDetailPK(t *testing.T) {
 		_, err := repo.DetailHasilLabMB(context.Background(), "2026/09/04/000001", "MB010", "2026-09-04", "14:30:00")
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("expected %v, got %v", wantErr, err)
+		}
+	})
+}
+
+type labTxDriver struct {
+	attempt    atomic.Int32
+	rollbacks  atomic.Int32
+	commits    atomic.Int32
+	stmtOpens  atomic.Int32
+	stmtCloses atomic.Int32
+
+	queryFn  func(attempt int, query string, args []driver.NamedValue) ([]string, [][]driver.Value, error)
+	execFn   func(attempt int, query string, args []driver.NamedValue) error
+	stmtExec func(attempt int, query string, args []driver.NamedValue) error
+}
+
+func (d *labTxDriver) Connect(context.Context) (driver.Conn, error) {
+	return &labTxConn{drv: d}, nil
+}
+func (d *labTxDriver) Driver() driver.Driver { return nil }
+
+type labTxConn struct {
+	drv        *labTxDriver
+	curAttempt int
+}
+
+func (c *labTxConn) Close() error { return nil }
+
+func (c *labTxConn) Begin() (driver.Tx, error) {
+	c.curAttempt = int(c.drv.attempt.Add(1))
+	return &labTx{drv: c.drv}, nil
+}
+
+func (c *labTxConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	cols, rows, err := c.drv.queryFn(c.curAttempt, query, args)
+	if err != nil {
+		return nil, err
+	}
+	return &stubLabRows{cols: cols, rows: rows}, nil
+}
+
+func (c *labTxConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if c.drv.execFn != nil {
+		if err := c.drv.execFn(c.curAttempt, query, args); err != nil {
+			return nil, err
+		}
+	}
+	return driver.RowsAffected(1), nil
+}
+
+func (c *labTxConn) Prepare(query string) (driver.Stmt, error) {
+	c.drv.stmtOpens.Add(1)
+	return &labTxStmt{drv: c.drv, attempt: c.curAttempt, query: query}, nil
+}
+
+type labTx struct {
+	drv  *labTxDriver
+	done bool
+}
+
+func (t *labTx) Commit() error {
+	t.done = true
+	t.drv.commits.Add(1)
+	return nil
+}
+
+func (t *labTx) Rollback() error {
+	if !t.done {
+		t.done = true
+		t.drv.rollbacks.Add(1)
+	}
+	return nil
+}
+
+type labTxStmt struct {
+	drv     *labTxDriver
+	attempt int
+	query   string
+}
+
+func (s *labTxStmt) Close() error {
+	s.drv.stmtCloses.Add(1)
+	return nil
+}
+func (s *labTxStmt) NumInput() int                                 { return -1 }
+func (s *labTxStmt) Exec([]driver.Value) (driver.Result, error)    { return nil, errors.New("unexpected Exec") }
+func (s *labTxStmt) Query([]driver.Value) (driver.Rows, error)     { return nil, errors.New("unexpected Query") }
+func (s *labTxStmt) ExecContext(_ context.Context, args []driver.NamedValue) (driver.Result, error) {
+	if s.drv.stmtExec != nil {
+		if err := s.drv.stmtExec(s.attempt, s.query, args); err != nil {
+			return nil, err
+		}
+	}
+	return driver.RowsAffected(1), nil
+}
+
+func TestSimpanPermintaanLab_PK_PA_MB_RetryAndCleanClose(t *testing.T) {
+	newRetryDriver := func(t *testing.T, prefix string) *labTxDriver {
+		t.Helper()
+		return &labTxDriver{
+			queryFn: func(attempt int, query string, _ []driver.NamedValue) ([]string, [][]driver.Value, error) {
+				if strings.Contains(strings.ToUpper(query), "FOR UPDATE") {
+					t.Fatalf("query must NOT contain FOR UPDATE: %s", query)
+				}
+				if attempt == 1 {
+					return nil, nil, &mysqlDriver.MySQLError{Number: 1213, Message: "Deadlock found"}
+				}
+				if attempt == 2 {
+					return []string{"noorder"}, nil, nil
+				}
+				return []string{"noorder"}, [][]driver.Value{{prefix + "202611120001"}}, nil
+			},
+			execFn: func(attempt int, _ string, _ []driver.NamedValue) error {
+				if attempt == 2 {
+					return &mysqlDriver.MySQLError{Number: 1062, Message: "Duplicate entry"}
+				}
+				return nil
+			},
+		}
+	}
+
+	t.Run("Lab PK recovers after 1213 and 1062 and closes both prepared statements", func(t *testing.T) {
+		drv := newRetryDriver(t, "PK")
+		db := sql.OpenDB(drv)
+		defer db.Close()
+		repo := NewRepository(db)
+
+		got, err := repo.SimpanPermintaanLabPK(
+			context.Background(),
+			"2026/11/12/000001", "DR001", shared.StatusLanjutRawatJalan,
+			SimpanPermintaanLabPKRequest{
+				PermintaanLabHeaderRequest: PermintaanLabHeaderRequest{
+					TanggalPermintaan: "2026-11-12", JamPermintaan: "09:00:00", DiagnosaKlinis: "Demam",
+				},
+			},
+			[]string{"PK01"},
+			map[string][]int{"PK01": {101, 102}},
+		)
+		if err != nil || got != "PK202611120002" {
+			t.Fatalf("expected PK202611120002, got %q (err=%v)", got, err)
+		}
+		if drv.attempt.Load() != 3 || drv.rollbacks.Load() != 2 || drv.commits.Load() != 1 {
+			t.Fatalf("unexpected tx counts: attempts=%d rollbacks=%d commits=%d", drv.attempt.Load(), drv.rollbacks.Load(), drv.commits.Load())
+		}
+		if opens, closes := drv.stmtOpens.Load(), drv.stmtCloses.Load(); opens != 2 || closes != 2 {
+			t.Fatalf("expected 2 stmts opened & closed, got opens=%d closes=%d", opens, closes)
+		}
+	})
+
+	t.Run("Lab PA recovers after 1213 and 1062 and closes prepared statement", func(t *testing.T) {
+		drv := newRetryDriver(t, "PA")
+		db := sql.OpenDB(drv)
+		defer db.Close()
+		repo := NewRepository(db)
+
+		got, err := repo.SimpanPermintaanLabPA(
+			context.Background(),
+			"2026/11/12/000001", "DR001", shared.StatusLanjutRawatJalan,
+			SimpanPermintaanLabPARequest{
+				PermintaanLabHeaderRequest: PermintaanLabHeaderRequest{
+					TanggalPermintaan: "2026-11-12", JamPermintaan: "09:00:00", DiagnosaKlinis: "Biopsi",
+				},
+			},
+			[]string{"PA01"},
+		)
+		if err != nil || got != "PA202611120002" {
+			t.Fatalf("expected PA202611120002, got %q (err=%v)", got, err)
+		}
+		if drv.attempt.Load() != 3 || drv.rollbacks.Load() != 2 || drv.commits.Load() != 1 {
+			t.Fatalf("unexpected tx counts: attempts=%d rollbacks=%d commits=%d", drv.attempt.Load(), drv.rollbacks.Load(), drv.commits.Load())
+		}
+		if opens, closes := drv.stmtOpens.Load(), drv.stmtCloses.Load(); opens != 1 || closes != 1 {
+			t.Fatalf("expected 1 stmt opened & closed, got opens=%d closes=%d", opens, closes)
+		}
+	})
+
+	t.Run("Lab MB recovers after 1213 and 1062 and child 1062 fails immediately", func(t *testing.T) {
+		drv := newRetryDriver(t, "MB")
+		db := sql.OpenDB(drv)
+		defer db.Close()
+		repo := NewRepository(db)
+
+		got, err := repo.SimpanPermintaanLabMB(
+			context.Background(),
+			"2026/11/12/000001", "DR001", shared.StatusLanjutRawatJalan,
+			SimpanPermintaanLabMBRequest{
+				PermintaanLabHeaderRequest: PermintaanLabHeaderRequest{
+					TanggalPermintaan: "2026-11-12", JamPermintaan: "09:00:00", DiagnosaKlinis: "Kultur",
+				},
+			},
+			[]string{"MB01"},
+			map[string][]int{"MB01": {201}},
+		)
+		if err != nil || got != "MB202611120002" {
+			t.Fatalf("expected MB202611120002, got %q (err=%v)", got, err)
+		}
+
+		childDupDrv := &labTxDriver{
+			queryFn: func(_ int, _ string, _ []driver.NamedValue) ([]string, [][]driver.Value, error) {
+				return []string{"noorder"}, nil, nil
+			},
+			stmtExec: func(_ int, _ string, _ []driver.NamedValue) error {
+				return &mysqlDriver.MySQLError{Number: 1062, Message: "Duplicate child entry"}
+			},
+		}
+		dbDup := sql.OpenDB(childDupDrv)
+		defer dbDup.Close()
+		repoDup := NewRepository(dbDup)
+
+		_, err = repoDup.SimpanPermintaanLabMB(
+			context.Background(),
+			"2026/11/12/000001", "DR001", shared.StatusLanjutRawatJalan,
+			SimpanPermintaanLabMBRequest{
+				PermintaanLabHeaderRequest: PermintaanLabHeaderRequest{
+					TanggalPermintaan: "2026-11-12", JamPermintaan: "09:00:00", DiagnosaKlinis: "Kultur",
+				},
+			},
+			[]string{"MB01", "MB01"},
+			nil,
+		)
+		if err == nil || childDupDrv.attempt.Load() != 1 || childDupDrv.rollbacks.Load() != 1 {
+			t.Fatalf("expected immediate stop on child 1062, got err=%v attempts=%d rollbacks=%d", err, childDupDrv.attempt.Load(), childDupDrv.rollbacks.Load())
 		}
 	})
 }

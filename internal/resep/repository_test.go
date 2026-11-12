@@ -7,7 +7,10 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
 
 	"erm-dokter/internal/shared"
 )
@@ -194,6 +197,211 @@ func TestRepository_LoadResepRacikan_PreservesAllRacikanDetailsOnRealloc(t *test
 		}
 		if len(list[1].ResepDokterRacikan[0].DetailRacikan) != 1 || list[1].ResepDokterRacikan[0].DetailRacikan[0].KodeObat != "B1_OB1" {
 			t.Fatalf("R002 racikan 1 detail lost or mismatched: %+v", list[1].ResepDokterRacikan[0].DetailRacikan)
+		}
+	})
+}
+
+type resepTxDriver struct {
+	attempt    atomic.Int32
+	rollbacks  atomic.Int32
+	commits    atomic.Int32
+	stmtOpens  atomic.Int32
+	stmtCloses atomic.Int32
+
+	queryFn  func(attempt int, inTx bool, query string, args []driver.NamedValue) ([]string, [][]driver.Value, error)
+	execFn   func(attempt int, query string, args []driver.NamedValue) error
+	stmtExec func(attempt int, query string, args []driver.NamedValue) error
+}
+
+func (d *resepTxDriver) Connect(context.Context) (driver.Conn, error) {
+	return &resepTxConn{drv: d}, nil
+}
+func (d *resepTxDriver) Driver() driver.Driver { return nil }
+
+type resepTxConn struct {
+	drv        *resepTxDriver
+	curAttempt int
+	inTx       bool
+}
+
+func (c *resepTxConn) Close() error { return nil }
+
+func (c *resepTxConn) Begin() (driver.Tx, error) {
+	c.curAttempt = int(c.drv.attempt.Add(1))
+	c.inTx = true
+	return &resepTx{conn: c}, nil
+}
+
+func (c *resepTxConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	cols, rows, err := c.drv.queryFn(c.curAttempt, c.inTx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	return &stubResepRows{cols: cols, rows: rows}, nil
+}
+
+func (c *resepTxConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if c.drv.execFn != nil {
+		if err := c.drv.execFn(c.curAttempt, query, args); err != nil {
+			return nil, err
+		}
+	}
+	return driver.RowsAffected(1), nil
+}
+
+func (c *resepTxConn) Prepare(query string) (driver.Stmt, error) {
+	c.drv.stmtOpens.Add(1)
+	return &resepTxStmt{drv: c.drv, attempt: c.curAttempt, query: query}, nil
+}
+
+type resepTx struct {
+	conn *resepTxConn
+	done bool
+}
+
+func (t *resepTx) Commit() error {
+	t.done = true
+	t.conn.inTx = false
+	t.conn.drv.commits.Add(1)
+	return nil
+}
+
+func (t *resepTx) Rollback() error {
+	if !t.done {
+		t.done = true
+		t.conn.inTx = false
+		t.conn.drv.rollbacks.Add(1)
+	}
+	return nil
+}
+
+type resepTxStmt struct {
+	drv     *resepTxDriver
+	attempt int
+	query   string
+}
+
+func (s *resepTxStmt) Close() error {
+	s.drv.stmtCloses.Add(1)
+	return nil
+}
+func (s *resepTxStmt) NumInput() int                                 { return -1 }
+func (s *resepTxStmt) Exec([]driver.Value) (driver.Result, error)    { return nil, errors.New("unexpected Exec") }
+func (s *resepTxStmt) Query([]driver.Value) (driver.Rows, error)     { return nil, errors.New("unexpected Query") }
+func (s *resepTxStmt) ExecContext(_ context.Context, args []driver.NamedValue) (driver.Result, error) {
+	if s.drv.stmtExec != nil {
+		if err := s.drv.stmtExec(s.attempt, s.query, args); err != nil {
+			return nil, err
+		}
+	}
+	return driver.RowsAffected(1), nil
+}
+
+func TestSimpanResep_RetryDeadlockAndDuplicate_CleanRollbackAndStmtClose(t *testing.T) {
+	t.Run("Recovers from Deadlock 1213 and Header Duplicate 1062, closes statements per attempt", func(t *testing.T) {
+		drv := &resepTxDriver{
+			queryFn: func(attempt int, inTx bool, query string, _ []driver.NamedValue) ([]string, [][]driver.Value, error) {
+				if inTx {
+					if strings.Contains(strings.ToUpper(query), "FOR UPDATE") {
+						t.Fatalf("order generator query must NOT contain FOR UPDATE: %s", query)
+					}
+					if attempt == 1 {
+						return nil, nil, &mysqlDriver.MySQLError{Number: 1213, Message: "Deadlock found"}
+					}
+					if attempt == 2 {
+						return []string{"no_resep"}, [][]driver.Value{{"202611120005"}}, nil
+					}
+					return []string{"no_resep"}, [][]driver.Value{{"202611120006"}}, nil
+				}
+				switch {
+				case strings.Contains(query, "FROM resep_obat ro"):
+					return []string{
+						"no_resep", "no_rawat", "tanggal_peresepan", "jam_peresepan",
+						"tanggal_perawatan", "jam_perawatan", "tanggal_penyerahan", "jam_penyerahan",
+						"status", "kd_dokter", "nama_dokter",
+					}, [][]driver.Value{{
+						"202611120007", "2026/11/12/000001", "2026-11-12", "09:00:00",
+						"0000-00-00", "00:00:00", "0000-00-00", "00:00:00",
+						"ralan", "DR001", "dr. Budi",
+					}}, nil
+				case strings.Contains(query, "FROM resep_dokter rd"):
+					return []string{"no_resep", "kode_obat", "nama_obat", "jml", "satuan", "aturan_pakai"},
+						[][]driver.Value{{"202611120007", "OB01", "Paracetamol", float64(10), "TAB", "3x1"}}, nil
+				case strings.Contains(query, "FROM resep_dokter_racikan rdr"):
+					return []string{"no_resep", "no_racik", "nama_racik", "kd_racik", "metode_racik", "jml_dr", "aturan_pakai", "keterangan"}, nil, nil
+				default:
+					t.Fatalf("unexpected query: %s", query)
+					return nil, nil, nil
+				}
+			},
+			execFn: func(attempt int, _ string, _ []driver.NamedValue) error {
+				if attempt == 2 {
+					return &mysqlDriver.MySQLError{Number: 1062, Message: "Duplicate entry '202611120006' for key 'PRIMARY'"}
+				}
+				return nil
+			},
+			stmtExec: func(attempt int, _ string, _ []driver.NamedValue) error {
+				if attempt == 3 {
+					return &mysqlDriver.MySQLError{Number: 1213, Message: "Deadlock on child resep_dokter"}
+				}
+				return nil
+			},
+		}
+
+		db := sql.OpenDB(drv)
+		defer db.Close()
+		repo := NewRepository(db)
+
+		got, err := repo.SimpanResep(context.Background(), "DR001", shared.StatusLanjutRawatJalan, SimpanResepRequest{
+			NoRawat:          "2026/11/12/000001",
+			TanggalPeresepan: "2026-11-12",
+			JamPeresepan:     "09:00:00",
+			ResepDokter: []ResepDokterInput{
+				{ItemObatInput: ItemObatInput{KodeObat: "OB01", Jumlah: 10}, AturanPakai: "3x1"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected SimpanResep to recover on attempt 4, got error: %v", err)
+		}
+		if got == nil || got.NoResep != "202611120007" {
+			t.Fatalf("expected NoResep 202611120007, got %+v", got)
+		}
+		if drv.attempt.Load() != 4 || drv.rollbacks.Load() != 3 || drv.commits.Load() != 1 {
+			t.Fatalf("unexpected tx counts: attempts=%d rollbacks=%d commits=%d", drv.attempt.Load(), drv.rollbacks.Load(), drv.commits.Load())
+		}
+		if opens, closes := drv.stmtOpens.Load(), drv.stmtCloses.Load(); opens != 2 || closes != 2 {
+			t.Fatalf("expected all prepared statements closed (opens=%d closes=%d)", opens, closes)
+		}
+	})
+
+	t.Run("Child duplicate 1062 on resep_dokter fails immediately without retry", func(t *testing.T) {
+		drv := &resepTxDriver{
+			queryFn: func(_ int, _ bool, _ string, _ []driver.NamedValue) ([]string, [][]driver.Value, error) {
+				return []string{"no_resep"}, nil, nil
+			},
+			stmtExec: func(_ int, _ string, _ []driver.NamedValue) error {
+				return &mysqlDriver.MySQLError{Number: 1062, Message: "Duplicate entry '202611120001-OB01' for key 'PRIMARY'"}
+			},
+		}
+
+		db := sql.OpenDB(drv)
+		defer db.Close()
+		repo := NewRepository(db)
+
+		_, err := repo.SimpanResep(context.Background(), "DR001", shared.StatusLanjutRawatJalan, SimpanResepRequest{
+			NoRawat:          "2026/11/12/000001",
+			TanggalPeresepan: "2026-11-12",
+			JamPeresepan:     "09:00:00",
+			ResepDokter: []ResepDokterInput{
+				{ItemObatInput: ItemObatInput{KodeObat: "OB01", Jumlah: 10}, AturanPakai: "3x1"},
+				{ItemObatInput: ItemObatInput{KodeObat: "OB01", Jumlah: 5}, AturanPakai: "2x1"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected child duplicate 1062 error")
+		}
+		if drv.attempt.Load() != 1 || drv.rollbacks.Load() != 1 {
+			t.Fatalf("expected 1 attempt & 1 rollback without wasted retries, got attempts=%d rollbacks=%d", drv.attempt.Load(), drv.rollbacks.Load())
 		}
 	})
 }

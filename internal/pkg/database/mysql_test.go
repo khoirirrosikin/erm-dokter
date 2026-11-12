@@ -36,6 +36,12 @@ func TestBuildDSN(t *testing.T) {
 		if cfg.Timeout != 5*time.Second {
 			t.Errorf("expected Timeout 5s, got %v", cfg.Timeout)
 		}
+		if cfg.ReadTimeout != 30*time.Second {
+			t.Errorf("expected ReadTimeout 30s, got %v", cfg.ReadTimeout)
+		}
+		if cfg.WriteTimeout != 30*time.Second {
+			t.Errorf("expected WriteTimeout 30s, got %v", cfg.WriteTimeout)
+		}
 		if cfg.Addr != "127.0.0.1:3306" {
 			t.Errorf("expected Addr '127.0.0.1:3306', got '%s'", cfg.Addr)
 		}

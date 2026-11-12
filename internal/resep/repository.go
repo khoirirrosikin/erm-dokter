@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -551,40 +550,6 @@ func (r *repository) UpdateResep(ctx context.Context, noResep string, req Simpan
 	return r.DetailResep(ctx, noResep)
 }
 
-func (r *repository) generateNoResep(ctx context.Context, tx *sql.Tx, tglPeresepan string) (string, error) {
-
-	parsedDate, err := time.Parse("2006-01-02", strings.TrimSpace(tglPeresepan))
-	prefix := time.Now().Format("20060102")
-	if err == nil {
-		prefix = parsedDate.Format("20060102")
-	}
-
-	minOrder := prefix + "0000"
-	maxOrder := prefix + "9999"
-
-	query := `SELECT no_resep FROM resep_obat WHERE no_resep BETWEEN ? AND ? ORDER BY no_resep DESC LIMIT 1 FOR UPDATE`
-	var lastToday string
-	err = tx.QueryRowContext(ctx, query, minOrder, maxOrder).Scan(&lastToday)
-	if errors.Is(err, sql.ErrNoRows) {
-		return prefix + "0001", nil
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if len(lastToday) != 12 || !strings.HasPrefix(lastToday, prefix) {
-		return time.Now().Format("20060102150405"), nil
-	}
-
-	tail := lastToday[len(lastToday)-4:]
-	next, err := strconv.Atoi(tail)
-	if err != nil || next >= 9999 {
-		return time.Now().Format("20060102150405"), nil
-	}
-
-	return fmt.Sprintf("%s%04d", prefix, next+1), nil
-}
-
 func (r *repository) SimpanResep(ctx context.Context, kodeDokter string, statusLanjut shared.StatusLanjut, req SimpanResepRequest) (*Resep, error) {
 	var dbStatus string
 	switch statusLanjut {
@@ -596,51 +561,51 @@ func (r *repository) SimpanResep(ctx context.Context, kodeDokter string, statusL
 		return nil, fmt.Errorf("repository: status lanjut '%s' tidak didukung", statusLanjut)
 	}
 
-	var lastErr error
-
-	for attempt := 1; attempt <= 3; attempt++ {
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		noResep, err := r.generateNoResep(ctx, tx, req.TanggalPeresepan)
-		if err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-
-		if err := r.insertHeader(ctx, tx, noResep, req, kodeDokter, dbStatus); err != nil {
-			_ = tx.Rollback()
-			if isDuplicateKey(err) {
-				lastErr = err
-				continue
-			}
-			return nil, err
-		}
-
-		if err := r.insertResepDokter(ctx, tx, noResep, req.ResepDokter); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-
-		if err := r.insertResepRacikan(ctx, tx, noResep, req.ResepRacikan); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-
-		if err := tx.Commit(); err != nil {
-			if isDuplicateKey(err) {
-				lastErr = err
-				continue
-			}
-			return nil, err
-		}
-
-		return r.DetailResep(ctx, noResep)
+	noResep, err := database.RunOrderTxWithRetry(ctx, database.DefaultOrderMaxAttempts, func(attempt int) (string, bool, error) {
+		return r.simpanResepOnce(ctx, attempt, kodeDokter, dbStatus, req)
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("gagal mendapatkan nomor resep unik setelah 3 kali percobaan: %w", lastErr)
+	return r.DetailResep(ctx, noResep)
+}
+
+func (r *repository) simpanResepOnce(
+	ctx context.Context,
+	attempt int,
+	kodeDokter string,
+	dbStatus string,
+	req SimpanResepRequest,
+) (string, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	noResep, err := database.GenerateDailyOrderNumber(ctx, tx, database.OrderSpecResep, req.TanggalPeresepan, attempt, time.Now())
+	if err != nil {
+		return "", database.IsDeadlockOrLockTimeout(err), err
+	}
+
+	if err := r.insertHeader(ctx, tx, noResep, req, kodeDokter, dbStatus); err != nil {
+		return "", database.IsRetryableOrderError(err), err
+	}
+
+	if err := r.insertResepDokter(ctx, tx, noResep, req.ResepDokter); err != nil {
+		return "", database.IsDeadlockOrLockTimeout(err), err
+	}
+
+	if err := r.insertResepRacikan(ctx, tx, noResep, req.ResepRacikan); err != nil {
+		return "", database.IsDeadlockOrLockTimeout(err), err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", database.IsRetryableOrderError(err), err
+	}
+
+	return noResep, false, nil
 }
 
 func (r *repository) insertHeader(ctx context.Context, tx *sql.Tx, noResep string, req SimpanResepRequest, kodeDokter string, dbStatus string) error {
@@ -709,9 +674,5 @@ func (r *repository) insertResepRacikan(ctx context.Context, tx *sql.Tx, noResep
 }
 
 func isDuplicateKey(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "1062") || strings.Contains(errStr, "duplicate") || strings.Contains(errStr, "primary")
+	return database.IsDuplicateEntry(err)
 }

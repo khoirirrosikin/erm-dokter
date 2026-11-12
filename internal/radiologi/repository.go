@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -281,120 +280,77 @@ func (r *repository) attachGambarPACS(ctx context.Context, list []HasilRadiologi
 	return nil
 }
 
-func isDuplicateKey(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "1062") || strings.Contains(errStr, "duplicate") || strings.Contains(errStr, "primary")
-}
-
-func (r *repository) generateNoPermintaanRadiologi(ctx context.Context, tx *sql.Tx, tanggalPermintaan string) (string, error) {
-	parsedDate, err := time.Parse("2006-01-02", strings.TrimSpace(tanggalPermintaan))
-	prefixDate := time.Now().Format("20060102")
-	if err == nil {
-		prefixDate = parsedDate.Format("20060102")
-	}
-	prefix := "RAD" + prefixDate
-	minOrder := prefix + "0000"
-	maxOrder := prefix + "9999"
-
-	query := `SELECT noorder FROM permintaan_radiologi WHERE noorder BETWEEN ? AND ? ORDER BY noorder DESC LIMIT 1 FOR UPDATE`
-	var lastToday string
-	err = tx.QueryRowContext(ctx, query, minOrder, maxOrder).Scan(&lastToday)
-	if errors.Is(err, sql.ErrNoRows) {
-		return prefix + "0001", nil
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if len(lastToday) != 15 || !strings.HasPrefix(lastToday, prefix) {
-		return "RAD" + time.Now().Format("20060102150405"), nil
-	}
-
-	tail := lastToday[len(lastToday)-4:]
-	next, err := strconv.Atoi(tail)
-	if err != nil || next >= 9999 {
-		return "RAD" + time.Now().Format("20060102150405"), nil
-	}
-
-	return fmt.Sprintf("%s%04d", prefix, next+1), nil
-}
-
 func (r *repository) SimpanPermintaanRadiologi(ctx context.Context, noRawat string, kodeDokter string, statusLanjut shared.StatusLanjut, req SimpanPermintaanRadiologiRequest, kodeTindakanList []string) (string, error) {
-	var lastErr error
 	status := strings.ToLower(string(statusLanjut))
+	return database.RunOrderTxWithRetry(ctx, database.DefaultOrderMaxAttempts, func(attempt int) (string, bool, error) {
+		return r.simpanPermintaanRadiologiOnce(ctx, attempt, noRawat, kodeDokter, status, req, kodeTindakanList)
+	})
+}
 
-	for attempt := 1; attempt <= 3; attempt++ {
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return "", err
-		}
+func (r *repository) simpanPermintaanRadiologiOnce(
+	ctx context.Context,
+	attempt int,
+	noRawat string,
+	kodeDokter string,
+	status string,
+	req SimpanPermintaanRadiologiRequest,
+	kodeTindakanList []string,
+) (string, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback() }()
 
-		noPermintaan, err := r.generateNoPermintaanRadiologi(ctx, tx, req.TanggalPermintaan)
-		if err != nil {
-			_ = tx.Rollback()
-			return "", err
-		}
+	noPermintaan, err := database.GenerateDailyOrderNumber(ctx, tx, database.OrderSpecRadiologi, req.TanggalPermintaan, attempt, time.Now())
+	if err != nil {
+		return "", database.IsDeadlockOrLockTimeout(err), err
+	}
 
-		insertHeaderQuery := `
-			INSERT INTO permintaan_radiologi (
-				noorder, no_rawat, tgl_permintaan, jam_permintaan, 
-				tgl_sampel, jam_sampel, tgl_hasil, jam_hasil, 
-				dokter_perujuk, status, informasi_tambahan, diagnosa_klinis
-			) VALUES (
-				?, ?, ?, ?, 
-				'0000-00-00', '00:00:00', '0000-00-00', '00:00:00', 
-				?, ?, ?, ?
-			)
-		`
-		_, err = tx.ExecContext(ctx, insertHeaderQuery,
-			noPermintaan,
-			noRawat,
-			req.TanggalPermintaan,
-			req.JamPermintaan,
-			kodeDokter,
-			status,
-			req.InformasiTambahan,
-			req.DiagnosaKlinis,
+	insertHeaderQuery := `
+		INSERT INTO permintaan_radiologi (
+			noorder, no_rawat, tgl_permintaan, jam_permintaan, 
+			tgl_sampel, jam_sampel, tgl_hasil, jam_hasil, 
+			dokter_perujuk, status, informasi_tambahan, diagnosa_klinis
+		) VALUES (
+			?, ?, ?, ?, 
+			'0000-00-00', '00:00:00', '0000-00-00', '00:00:00', 
+			?, ?, ?, ?
 		)
-		if err != nil {
-			_ = tx.Rollback()
-			if isDuplicateKey(err) {
-				lastErr = err
-				continue
-			}
-			return "", err
-		}
+	`
+	_, err = tx.ExecContext(ctx, insertHeaderQuery,
+		noPermintaan,
+		noRawat,
+		req.TanggalPermintaan,
+		req.JamPermintaan,
+		kodeDokter,
+		status,
+		req.InformasiTambahan,
+		req.DiagnosaKlinis,
+	)
+	if err != nil {
+		return "", database.IsRetryableOrderError(err), err
+	}
 
+	if len(kodeTindakanList) > 0 {
 		stmtTindakan, err := tx.PrepareContext(ctx, `INSERT INTO permintaan_pemeriksaan_radiologi (noorder, kd_jenis_prw, stts_bayar) VALUES (?, ?, 'Belum')`)
 		if err != nil {
-			_ = tx.Rollback()
-			return "", err
+			return "", database.IsDeadlockOrLockTimeout(err), err
 		}
 		defer stmtTindakan.Close()
 
 		for _, kodeTindakan := range kodeTindakanList {
 			if _, err := stmtTindakan.ExecContext(ctx, noPermintaan, kodeTindakan); err != nil {
-				_ = tx.Rollback()
-				return "", err
+				return "", database.IsDeadlockOrLockTimeout(err), err
 			}
 		}
-
-		if err := tx.Commit(); err != nil {
-			_ = tx.Rollback()
-			if isDuplicateKey(err) {
-				lastErr = err
-				continue
-			}
-			return "", err
-		}
-
-		return noPermintaan, nil
 	}
 
-	return "", fmt.Errorf("gagal membuat nomor order permintaan radiologi unik setelah 3 percobaan: %w", lastErr)
+	if err := tx.Commit(); err != nil {
+		return "", database.IsRetryableOrderError(err), err
+	}
+
+	return noPermintaan, false, nil
 }
 
 func (r *repository) DaftarPermintaanRadiologiKunjungan(ctx context.Context, noRawat string, statusLanjut shared.StatusLanjut) ([]DetailPermintaanRadiologi, error) {

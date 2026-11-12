@@ -195,116 +195,82 @@ func (r *repository) DetailHasilLabMB(ctx context.Context, noRawat string, kodeT
 	return &item, nil
 }
 
-func (r *repository) generateNoPermintaanMB(ctx context.Context, tx *sql.Tx, tanggalPermintaan string) (string, error) {
-	parsedDate, err := time.Parse("2006-01-02", strings.TrimSpace(tanggalPermintaan))
-	prefixDate := time.Now().Format("20060102")
-	if err == nil {
-		prefixDate = parsedDate.Format("20060102")
-	}
-	prefix := "MB" + prefixDate
-	minOrder := prefix + "0000"
-	maxOrder := prefix + "9999"
-
-	query := `SELECT noorder FROM permintaan_labmb WHERE noorder BETWEEN ? AND ? ORDER BY noorder DESC LIMIT 1 FOR UPDATE`
-	var lastToday string
-	err = tx.QueryRowContext(ctx, query, minOrder, maxOrder).Scan(&lastToday)
-	if errors.Is(err, sql.ErrNoRows) {
-		return prefix + "0001", nil
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if len(lastToday) != 14 || !strings.HasPrefix(lastToday, prefix) {
-		return "MB" + time.Now().Format("20060102150405"), nil
-	}
-
-	tail := lastToday[len(lastToday)-4:]
-	next, err := strconv.Atoi(tail)
-	if err != nil || next >= 9999 {
-		return "MB" + time.Now().Format("20060102150405"), nil
-	}
-
-	return fmt.Sprintf("%s%04d", prefix, next+1), nil
+func (r *repository) SimpanPermintaanLabMB(ctx context.Context, noRawat string, kodeDokter string, statusLanjut shared.StatusLanjut, req SimpanPermintaanLabMBRequest, kodeTindakanList []string, templateMap map[string][]int) (string, error) {
+	status := strings.ToLower(string(statusLanjut))
+	return database.RunOrderTxWithRetry(ctx, database.DefaultOrderMaxAttempts, func(attempt int) (string, bool, error) {
+		return r.simpanPermintaanLabMBOnce(ctx, attempt, noRawat, kodeDokter, status, req, kodeTindakanList, templateMap)
+	})
 }
 
-func (r *repository) SimpanPermintaanLabMB(ctx context.Context, noRawat string, kodeDokter string, statusLanjut shared.StatusLanjut, req SimpanPermintaanLabMBRequest, kodeTindakanList []string, templateMap map[string][]int) (string, error) {
-	var lastErr error
-	status := strings.ToLower(string(statusLanjut))
+func (r *repository) simpanPermintaanLabMBOnce(
+	ctx context.Context,
+	attempt int,
+	noRawat string,
+	kodeDokter string,
+	status string,
+	req SimpanPermintaanLabMBRequest,
+	kodeTindakanList []string,
+	templateMap map[string][]int,
+) (string, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback() }()
 
-	for attempt := 1; attempt <= 3; attempt++ {
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return "", err
-		}
+	noPermintaan, err := database.GenerateDailyOrderNumber(ctx, tx, database.OrderSpecLabMB, req.TanggalPermintaan, attempt, time.Now())
+	if err != nil {
+		return "", database.IsDeadlockOrLockTimeout(err), err
+	}
 
-		noPermintaan, err := r.generateNoPermintaanMB(ctx, tx, req.TanggalPermintaan)
-		if err != nil {
-			_ = tx.Rollback()
-			return "", err
-		}
+	insertHeaderQuery := `
+		INSERT INTO permintaan_labmb (
+			noorder, no_rawat, tgl_permintaan, jam_permintaan, 
+			tgl_sampel, jam_sampel, tgl_hasil, jam_hasil, 
+			dokter_perujuk, status, informasi_tambahan, diagnosa_klinis
+		) VALUES (?, ?, ?, ?, '0000-00-00', '00:00:00', '0000-00-00', '00:00:00', ?, ?, ?, ?)
+	`
+	_, err = tx.ExecContext(ctx, insertHeaderQuery,
+		noPermintaan, noRawat, req.TanggalPermintaan, req.JamPermintaan,
+		kodeDokter, status, req.InformasiTambahan, req.DiagnosaKlinis,
+	)
+	if err != nil {
+		return "", database.IsRetryableOrderError(err), err
+	}
 
-		insertHeaderQuery := `
-			INSERT INTO permintaan_labmb (
-				noorder, no_rawat, tgl_permintaan, jam_permintaan, 
-				tgl_sampel, jam_sampel, tgl_hasil, jam_hasil, 
-				dokter_perujuk, status, informasi_tambahan, diagnosa_klinis
-			) VALUES (?, ?, ?, ?, '0000-00-00', '00:00:00', '0000-00-00', '00:00:00', ?, ?, ?, ?)
-		`
-		_, err = tx.ExecContext(ctx, insertHeaderQuery,
-			noPermintaan, noRawat, req.TanggalPermintaan, req.JamPermintaan,
-			kodeDokter, status, req.InformasiTambahan, req.DiagnosaKlinis,
-		)
-		if err != nil {
-			_ = tx.Rollback()
-			if isDuplicateKey(err) {
-				lastErr = err
-				continue
-			}
-			return "", err
-		}
-
+	if len(kodeTindakanList) > 0 {
 		stmtTindakan, err := tx.PrepareContext(ctx, `INSERT INTO permintaan_pemeriksaan_labmb (noorder, kd_jenis_prw, stts_bayar) VALUES (?, ?, 'Belum')`)
 		if err != nil {
-			_ = tx.Rollback()
-			return "", err
+			return "", database.IsDeadlockOrLockTimeout(err), err
 		}
 		defer stmtTindakan.Close()
 
 		stmtDetail, err := tx.PrepareContext(ctx, `INSERT INTO permintaan_detail_permintaan_labmb (noorder, kd_jenis_prw, id_template, stts_bayar) VALUES (?, ?, ?, 'Belum')`)
 		if err != nil {
-			_ = tx.Rollback()
-			return "", err
+			return "", database.IsDeadlockOrLockTimeout(err), err
 		}
 		defer stmtDetail.Close()
 
 		for _, kodeTindakan := range kodeTindakanList {
 			if _, err := stmtTindakan.ExecContext(ctx, noPermintaan, kodeTindakan); err != nil {
-				_ = tx.Rollback()
-				return "", err
+				return "", database.IsDeadlockOrLockTimeout(err), err
 			}
 
 			if templates, ok := templateMap[kodeTindakan]; ok && len(templates) > 0 {
 				for _, idTemplate := range templates {
 					if _, err := stmtDetail.ExecContext(ctx, noPermintaan, kodeTindakan, idTemplate); err != nil {
-						_ = tx.Rollback()
-						return "", err
+						return "", database.IsDeadlockOrLockTimeout(err), err
 					}
 				}
 			}
 		}
-
-		if err := tx.Commit(); err != nil {
-			return "", err
-		}
-
-		return noPermintaan, nil
 	}
 
-	if lastErr != nil {
-		return "", fmt.Errorf("Gagal membuat nomor permintaan laboratorium MB karena bentrok nomor urut, silakan coba kirim ulang: %w", lastErr)
+	if err := tx.Commit(); err != nil {
+		return "", database.IsRetryableOrderError(err), err
 	}
-	return "", errors.New("Gagal membuat nomor permintaan laboratorium MB setelah 3 percobaan")
+
+	return noPermintaan, false, nil
 }
 
 func (r *repository) DaftarPermintaanLabMB(ctx context.Context, noRawat string, statusLanjut shared.StatusLanjut) ([]PermintaanLabMB, error) {

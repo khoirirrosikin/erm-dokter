@@ -42,6 +42,8 @@ func buildDSN(host, port, user, password, dbname string) string {
 	cfg.Addr = net.JoinHostPort(host, port)
 	cfg.DBName = dbname
 	cfg.Timeout = 5 * time.Second
+	cfg.ReadTimeout = 30 * time.Second
+	cfg.WriteTimeout = 30 * time.Second
 	cfg.ClientFoundRows = true
 	cfg.ParseTime = false
 	cfg.Loc = time.Local

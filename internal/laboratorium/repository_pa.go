@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -246,121 +245,88 @@ func toZeroDateIfEmpty(val string) string {
 	return trimmed
 }
 
-func (r *repository) generateNoPermintaanPA(ctx context.Context, tx *sql.Tx, tanggalPermintaan string) (string, error) {
-	parsedDate, err := time.Parse("2006-01-02", strings.TrimSpace(tanggalPermintaan))
-	prefixDate := time.Now().Format("20060102")
-	if err == nil {
-		prefixDate = parsedDate.Format("20060102")
-	}
-	prefix := "PA" + prefixDate
-	minOrder := prefix + "0000"
-	maxOrder := prefix + "9999"
-
-	query := `SELECT noorder FROM permintaan_labpa WHERE noorder BETWEEN ? AND ? ORDER BY noorder DESC LIMIT 1 FOR UPDATE`
-	var lastToday string
-	err = tx.QueryRowContext(ctx, query, minOrder, maxOrder).Scan(&lastToday)
-	if errors.Is(err, sql.ErrNoRows) {
-		return prefix + "0001", nil
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if len(lastToday) != 14 || !strings.HasPrefix(lastToday, prefix) {
-		return "PA" + time.Now().Format("20060102150405"), nil
-	}
-
-	tail := lastToday[len(lastToday)-4:]
-	next, err := strconv.Atoi(tail)
-	if err != nil || next >= 9999 {
-		return "PA" + time.Now().Format("20060102150405"), nil
-	}
-
-	return fmt.Sprintf("%s%04d", prefix, next+1), nil
+func (r *repository) SimpanPermintaanLabPA(ctx context.Context, noRawat string, kodeDokter string, statusLanjut shared.StatusLanjut, req SimpanPermintaanLabPARequest, kodeTindakanList []string) (string, error) {
+	status := strings.ToLower(string(statusLanjut))
+	return database.RunOrderTxWithRetry(ctx, database.DefaultOrderMaxAttempts, func(attempt int) (string, bool, error) {
+		return r.simpanPermintaanLabPAOnce(ctx, attempt, noRawat, kodeDokter, status, req, kodeTindakanList)
+	})
 }
 
-func (r *repository) SimpanPermintaanLabPA(ctx context.Context, noRawat string, kodeDokter string, statusLanjut shared.StatusLanjut, req SimpanPermintaanLabPARequest, kodeTindakanList []string) (string, error) {
-	var lastErr error
-	status := strings.ToLower(string(statusLanjut))
+func (r *repository) simpanPermintaanLabPAOnce(
+	ctx context.Context,
+	attempt int,
+	noRawat string,
+	kodeDokter string,
+	status string,
+	req SimpanPermintaanLabPARequest,
+	kodeTindakanList []string,
+) (string, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback() }()
 
-	for attempt := 1; attempt <= 3; attempt++ {
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return "", err
-		}
+	noPermintaan, err := database.GenerateDailyOrderNumber(ctx, tx, database.OrderSpecLabPA, req.TanggalPermintaan, attempt, time.Now())
+	if err != nil {
+		return "", database.IsDeadlockOrLockTimeout(err), err
+	}
 
-		noPermintaan, err := r.generateNoPermintaanPA(ctx, tx, req.TanggalPermintaan)
-		if err != nil {
-			_ = tx.Rollback()
-			return "", err
-		}
-
-		insertHeaderQuery := `
-			INSERT INTO permintaan_labpa (
-				noorder, no_rawat, tgl_permintaan, jam_permintaan, 
-				tgl_sampel, jam_sampel, tgl_hasil, jam_hasil, 
-				dokter_perujuk, status, informasi_tambahan, diagnosa_klinis,
-				pengambilan_bahan, diperoleh_dengan, lokasi_jaringan, diawetkan_dengan,
-				pernah_dilakukan_di, tanggal_pa_sebelumnya, nomor_pa_sebelumnya, diagnosa_pa_sebelumnya
-			) VALUES (
-				?, ?, ?, ?, 
-				'0000-00-00', '00:00:00', '0000-00-00', '00:00:00', 
-				?, ?, ?, ?,
-				?, ?, ?, ?,
-				?, ?, ?, ?
-			)
-		`
-		tglPengambilanBahan := strings.TrimSpace(req.PengambilanBahan)
-		if tglPengambilanBahan == "" {
-			tglPengambilanBahan = strings.TrimSpace(req.TanggalPermintaan)
-		}
-
-		_, err = tx.ExecContext(ctx, insertHeaderQuery,
-			noPermintaan, noRawat, req.TanggalPermintaan, req.JamPermintaan,
-			kodeDokter, status, req.InformasiTambahan, req.DiagnosaKlinis,
-			toNullString(tglPengambilanBahan),
-			toNullString(req.DiperolehDengan),
-			toNullString(req.LokasiJaringan),
-			toNullString(req.DiawetkanDengan),
-			toNullString(req.PernahDilakukanDi),
-			toZeroDateIfEmpty(req.TanggalPASebelumnya),
-			toNullString(req.NomorPASebelumnya),
-			toNullString(req.DiagnosaPASebelumnya),
+	insertHeaderQuery := `
+		INSERT INTO permintaan_labpa (
+			noorder, no_rawat, tgl_permintaan, jam_permintaan, 
+			tgl_sampel, jam_sampel, tgl_hasil, jam_hasil, 
+			dokter_perujuk, status, informasi_tambahan, diagnosa_klinis,
+			pengambilan_bahan, diperoleh_dengan, lokasi_jaringan, diawetkan_dengan,
+			pernah_dilakukan_di, tanggal_pa_sebelumnya, nomor_pa_sebelumnya, diagnosa_pa_sebelumnya
+		) VALUES (
+			?, ?, ?, ?, 
+			'0000-00-00', '00:00:00', '0000-00-00', '00:00:00', 
+			?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?, ?
 		)
-		if err != nil {
-			_ = tx.Rollback()
-			if isDuplicateKey(err) {
-				lastErr = err
-				continue
-			}
-			return "", err
-		}
+	`
+	tglPengambilanBahan := strings.TrimSpace(req.PengambilanBahan)
+	if tglPengambilanBahan == "" {
+		tglPengambilanBahan = strings.TrimSpace(req.TanggalPermintaan)
+	}
 
+	_, err = tx.ExecContext(ctx, insertHeaderQuery,
+		noPermintaan, noRawat, req.TanggalPermintaan, req.JamPermintaan,
+		kodeDokter, status, req.InformasiTambahan, req.DiagnosaKlinis,
+		toNullString(tglPengambilanBahan),
+		toNullString(req.DiperolehDengan),
+		toNullString(req.LokasiJaringan),
+		toNullString(req.DiawetkanDengan),
+		toNullString(req.PernahDilakukanDi),
+		toZeroDateIfEmpty(req.TanggalPASebelumnya),
+		toNullString(req.NomorPASebelumnya),
+		toNullString(req.DiagnosaPASebelumnya),
+	)
+	if err != nil {
+		return "", database.IsRetryableOrderError(err), err
+	}
+
+	if len(kodeTindakanList) > 0 {
 		stmtTindakan, err := tx.PrepareContext(ctx, `INSERT INTO permintaan_pemeriksaan_labpa (noorder, kd_jenis_prw, stts_bayar) VALUES (?, ?, 'Belum')`)
 		if err != nil {
-			_ = tx.Rollback()
-			return "", err
+			return "", database.IsDeadlockOrLockTimeout(err), err
 		}
 		defer stmtTindakan.Close()
 
 		for _, kodeTindakan := range kodeTindakanList {
 			if _, err := stmtTindakan.ExecContext(ctx, noPermintaan, kodeTindakan); err != nil {
-				_ = tx.Rollback()
-				return "", err
+				return "", database.IsDeadlockOrLockTimeout(err), err
 			}
 		}
-
-		if err := tx.Commit(); err != nil {
-			return "", err
-		}
-
-		return noPermintaan, nil
 	}
 
-	if lastErr != nil {
-		return "", fmt.Errorf("Gagal membuat nomor permintaan laboratorium PA karena bentrok nomor urut, silakan coba kirim ulang: %w", lastErr)
+	if err := tx.Commit(); err != nil {
+		return "", database.IsRetryableOrderError(err), err
 	}
-	return "", errors.New("Gagal membuat nomor permintaan laboratorium PA setelah 3 percobaan")
+
+	return noPermintaan, false, nil
 }
 
 func (r *repository) DaftarPermintaanLabPA(ctx context.Context, noRawat string, statusLanjut shared.StatusLanjut) ([]PermintaanLabPA, error) {
