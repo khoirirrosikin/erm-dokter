@@ -108,10 +108,7 @@ func (f *FilterRiwayatKunjungan) Validate() apperror.ValidationError {
 	errs := make(apperror.ValidationError)
 
 	if f.Tanggal != "" {
-		tglAwal, tglAkhir := formatter.ParseRentangTanggal(f.Tanggal)
-		if tglAwal == "" || tglAkhir == "" {
-			errs["tanggal"] = "Format rentang tanggal tidak valid, gunakan format YYYY-MM-DD,YYYY-MM-DD"
-		}
+		shared.ValidasiRentangTanggal(f.Tanggal, errs)
 	}
 
 	if len(errs) > 0 {

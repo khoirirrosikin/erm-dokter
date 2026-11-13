@@ -152,17 +152,8 @@ func TestPasienHandler_RiwayatKunjungan(t *testing.T) {
 		}
 	})
 
-	t.Run("Success via plain no_rm in path", func(t *testing.T) {
-		mockSvc := &mockPasienService{
-			riwayatKunjunganPasienFn: func(ctx context.Context, noRM string, filter pasien.FilterRiwayatKunjungan) ([]pasien.RiwayatKunjungan, shared.PaginationMeta, error) {
-				if noRM != "123456" {
-					t.Fatalf("unexpected noRM %s", noRM)
-				}
-				return []pasien.RiwayatKunjungan{}, shared.NewPaginationMeta(0, 1, 3), nil
-			},
-		}
-
-		handler := pasien.NewHandler(mockSvc, testEncKey)
+	t.Run("Rejects plain no_rm in path to prevent medical record enumeration", func(t *testing.T) {
+		handler := pasien.NewHandler(&mockPasienService{}, testEncKey)
 		mux := http.NewServeMux()
 		handler.RegisterRoutes(mux, authMwForTest, noOpMw)
 
@@ -170,8 +161,23 @@ func TestPasienHandler_RiwayatKunjungan(t *testing.T) {
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
-		if rr.Code != http.StatusOK {
-			t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for plaintext no_rm, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("Rejects request without valid KodeDokter in context", func(t *testing.T) {
+		handler := pasien.NewHandler(&mockPasienService{}, testEncKey)
+		mux := http.NewServeMux()
+		handler.RegisterRoutes(mux, noOpMw, noOpMw)
+
+		encPasien, _ := crypto.Encrypt("00123456", testEncKey)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/pasien/"+encPasien+"/riwayat-kunjungan", nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("expected status 401 without doctor claim, got %d", rr.Code)
 		}
 	})
 
@@ -194,12 +200,15 @@ func TestPasienHandler_RiwayatKunjungan(t *testing.T) {
 		mux := http.NewServeMux()
 		handler.RegisterRoutes(mux, authMwForTest, noOpMw)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/pasien/123456/riwayat-kunjungan?tanggal=invalid-date", nil)
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
+		encPasien, _ := crypto.Encrypt("00123456", testEncKey)
+		for _, badTanggal := range []string{"invalid-date", "abc,xyz", "2026-12-31,2026-01-01"} {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/pasien/"+encPasien+"/riwayat-kunjungan?tanggal="+badTanggal, nil)
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
 
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("expected status 400 for invalid tanggal, got %d", rr.Code)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400 for tanggal=%s, got %d", badTanggal, rr.Code)
+			}
 		}
 	})
 
@@ -214,7 +223,8 @@ func TestPasienHandler_RiwayatKunjungan(t *testing.T) {
 		mux := http.NewServeMux()
 		handler.RegisterRoutes(mux, authMwForTest, noOpMw)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/pasien/123456/riwayat-kunjungan", nil)
+		encPasien, _ := crypto.Encrypt("00123456", testEncKey)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/pasien/"+encPasien+"/riwayat-kunjungan", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 

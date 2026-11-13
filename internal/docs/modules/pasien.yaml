@@ -5,7 +5,7 @@ paths:
             summary: Riwayat Kunjungan Pasien (Cross Ralan & Ranap)
             description: |
                 Mengambil riwayat kunjungan pasien secara terpadu lintas rawat jalan dan rawat inap (Visit Timeline Index).
-                - Identifier pasien dikirim melalui path `{id_pasien}` (bisa berupa token terenkripsi AES-GCM atau plaintext nomor rekam medis).
+                - Identifier pasien dikirim melalui path `{id_pasien}` berupa token terenkripsi AES-GCM nomor rekam medis.
                 - Secara default menampilkan **3 riwayat kunjungan terakhir** (`limit=3`), diurutkan dari yang paling baru.
                 - Setiap item mengembalikan `id_kunjungan` terenkripsi sehingga frontend dapat langsung memanggil detail klinis spesifik kunjungan tersebut (resep, lab, radiologi, SOAP/CPPT).
             security:
@@ -14,7 +14,7 @@ paths:
                 - name: id_pasien
                   in: path
                   required: true
-                  description: Token terenkripsi nomor rekam medis atau nomor rekam medis (plaintext)
+                  description: Token terenkripsi AES-GCM nomor rekam medis
                   schema:
                       type: string
                 - name: tanggal

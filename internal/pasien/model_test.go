@@ -82,13 +82,15 @@ func TestFilterRiwayatKunjungan_SanitizeAndValidate(t *testing.T) {
 	})
 
 	t.Run("Validation rejects invalid tanggal", func(t *testing.T) {
-		f := pasien.FilterRiwayatKunjungan{
-			Tanggal: "not-a-date",
-		}
-		f.Sanitize()
-		errs := f.Validate()
-		if errs == nil {
-			t.Fatal("expected validation error for invalid tanggal")
+		for _, bad := range []string{"not-a-date", "abc,xyz", "2026-02-30,2026-03-01", "2026-12-31,2026-01-01"} {
+			f := pasien.FilterRiwayatKunjungan{
+				Tanggal: bad,
+			}
+			f.Sanitize()
+			errs := f.Validate()
+			if errs == nil {
+				t.Fatalf("expected validation error for invalid tanggal %q", bad)
+			}
 		}
 	})
 

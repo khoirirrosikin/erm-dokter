@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"erm-dokter/internal/middleware"
 	"erm-dokter/internal/pkg/crypto"
 	"erm-dokter/internal/pkg/response"
 	"erm-dokter/internal/shared/apperror"
@@ -28,6 +29,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, authMiddleware func(http.Ha
 }
 
 func (h *Handler) RiwayatKunjungan(w http.ResponseWriter, r *http.Request) {
+	if _, err := middleware.GetKodeDokter(r.Context()); err != nil {
+		apperror.HandleError(w, err)
+		return
+	}
+
 	idPasien := strings.TrimSpace(r.PathValue("id_pasien"))
 	if idPasien == "" {
 		apperror.HandleError(w, apperror.NewBusinessError("ID pasien wajib diisi"))
@@ -35,12 +41,9 @@ func (h *Handler) RiwayatKunjungan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cleanNoRM, err := crypto.Decrypt(idPasien, h.encryptionKey)
-	if err != nil {
-		if len(idPasien) > 30 {
-			apperror.HandleError(w, apperror.NewBusinessError("ID pasien tidak valid"))
-			return
-		}
-		cleanNoRM = idPasien
+	if err != nil || strings.TrimSpace(cleanNoRM) == "" {
+		apperror.HandleError(w, apperror.NewBusinessError("ID pasien tidak valid"))
+		return
 	}
 
 	q := r.URL.Query()
