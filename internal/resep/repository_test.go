@@ -148,11 +148,16 @@ func TestRepository_LoadResepRacikan_PreservesAllRacikanDetailsOnRealloc(t *test
 				return []string{"total"}, [][]driver.Value{{int64(2)}}, nil
 
 			case strings.Contains(query, "FROM resep_obat ro"):
+				if !strings.Contains(query, "COALESCE(DATE_FORMAT(ro.tgl_perawatan") || !strings.Contains(query, "COALESCE(DATE_FORMAT(ro.tgl_penyerahan") {
+					t.Errorf("expected DaftarResep query to select pharmacy validation/handover columns with COALESCE, got: %s", query)
+				}
 				return []string{
-						"no_resep", "no_rawat", "tanggal_peresepan", "jam_peresepan", "status", "kd_dokter", "nama_dokter",
+						"no_resep", "no_rawat", "tanggal_peresepan", "jam_peresepan",
+						"tanggal_perawatan", "jam_perawatan", "tanggal_penyerahan", "jam_penyerahan",
+						"status", "kd_dokter", "nama_dokter",
 					}, [][]driver.Value{
-						{"R001", "2026/09/04/000001", "2026-09-04", "10:00:00", "ralan", "D001", "dr. Budi"},
-						{"R002", "2026/09/04/000001", "2026-09-04", "08:00:00", "ralan", "D001", "dr. Budi"},
+						{"R001", "2026/09/04/000001", "2026-09-04", "10:00:00", "2026-09-04", "10:15:00", "2026-09-04", "10:30:00", "ralan", "D001", "dr. Budi"},
+						{"R002", "2026/09/04/000001", "2026-09-04", "08:00:00", "0000-00-00", "00:00:00", "0000-00-00", "00:00:00", "ralan", "D001", "dr. Budi"},
 					}, nil
 
 			case strings.Contains(query, "FROM resep_dokter rd"):
@@ -194,6 +199,9 @@ func TestRepository_LoadResepRacikan_PreservesAllRacikanDetailsOnRealloc(t *test
 		}
 		if len(list[0].ResepDokterRacikan[0].DetailRacikan) != 1 || list[0].ResepDokterRacikan[0].DetailRacikan[0].KodeObat != "A1_OB1" {
 			t.Fatalf("R001 racikan 1 detail lost or mismatched: %+v", list[0].ResepDokterRacikan[0].DetailRacikan)
+		}
+		if list[0].TanggalPerawatan != "2026-09-04" || list[0].JamPerawatan != "10:15:00" || list[0].TanggalPenyerahan != "2026-09-04" || list[0].JamPenyerahan != "10:30:00" {
+			t.Fatalf("expected R001 pharmacy columns populated, got %+v", list[0])
 		}
 		if len(list[1].ResepDokterRacikan[0].DetailRacikan) != 1 || list[1].ResepDokterRacikan[0].DetailRacikan[0].KodeObat != "B1_OB1" {
 			t.Fatalf("R002 racikan 1 detail lost or mismatched: %+v", list[1].ResepDokterRacikan[0].DetailRacikan)

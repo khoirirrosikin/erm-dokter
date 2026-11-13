@@ -97,7 +97,7 @@ func (r *repository) queryRiwayatLabPA(ctx context.Context, whereClause string, 
 	}
 	defer rows.Close()
 
-	var list []HasilLaboratorium
+	list := make([]HasilLaboratorium, 0)
 	for rows.Next() {
 		var item HasilLaboratorium
 		err = rows.Scan(
@@ -119,16 +119,17 @@ func (r *repository) queryRiwayatLabPA(ctx context.Context, whereClause string, 
 			return nil, 0, err
 		}
 
-		detailPA, errPA := r.fetchDetailPA(ctx, item.NoRawat, item.KodeTindakan, item.TanggalPeriksa, item.JamPeriksa)
-		if errPA != nil {
-			return nil, 0, errPA
-		}
-		item.DetailPA = detailPA
-
 		list = append(list, item)
 	}
 
 	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	if err = r.hydrateDetailPAList(ctx, list); err != nil {
 		return nil, 0, err
 	}
 
@@ -227,6 +228,77 @@ func (r *repository) fetchDetailPA(ctx context.Context, noRawat, kodeTindakan, t
 	}
 
 	return &pa, nil
+}
+
+func (r *repository) hydrateDetailPAList(ctx context.Context, list []HasilLaboratorium) error {
+	if len(list) == 0 {
+		return nil
+	}
+
+	indexByKey := make(map[periksaLabKey][]int, len(list))
+	clauses := make([]string, 0, len(list))
+	args := make([]any, 0, len(list)*4)
+
+	for i := range list {
+		list[i].DetailPA = &HasilLabPA{}
+		key := periksaLabKey{
+			noRawat:        list[i].NoRawat,
+			kodeTindakan:   list[i].KodeTindakan,
+			tanggalPeriksa: list[i].TanggalPeriksa,
+			jamPeriksa:     list[i].JamPeriksa,
+		}
+		if _, exists := indexByKey[key]; !exists {
+			clauses = append(clauses, "(dpl.no_rawat = ? AND dpl.kd_jenis_prw = ? AND dpl.tgl_periksa = ? AND dpl.jam = ?)")
+			args = append(args, key.noRawat, key.kodeTindakan, key.tanggalPeriksa, key.jamPeriksa)
+		}
+		indexByKey[key] = append(indexByKey[key], i)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			dpl.no_rawat,
+			dpl.kd_jenis_prw AS kode_tindakan,
+			COALESCE(DATE_FORMAT(dpl.tgl_periksa, '%%Y-%%m-%%d'), '') AS tgl_periksa,
+			dpl.jam AS jam_periksa,
+			COALESCE(dpl.diagnosa_klinik, '') AS diagnosa_klinik,
+			COALESCE(dpl.makroskopik, '') AS makroskopis,
+			COALESCE(dpl.mikroskopik, '') AS mikroskopis,
+			COALESCE(dpl.kesimpulan, '') AS kesimpulan,
+			COALESCE(dpl.kesan, '') AS kesan
+		FROM detail_periksa_labpa dpl
+		WHERE %s
+	`, strings.Join(clauses, " OR "))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key periksaLabKey
+		var pa HasilLabPA
+		err = rows.Scan(
+			&key.noRawat,
+			&key.kodeTindakan,
+			&key.tanggalPeriksa,
+			&key.jamPeriksa,
+			&pa.DiagnosaKlinik,
+			&pa.Makroskopis,
+			&pa.Mikroskopis,
+			&pa.Kesimpulan,
+			&pa.Kesan,
+		)
+		if err != nil {
+			return err
+		}
+		for _, idx := range indexByKey[key] {
+			paCopy := pa
+			list[idx].DetailPA = &paCopy
+		}
+	}
+
+	return rows.Err()
 }
 
 func toNullString(val string) any {

@@ -63,6 +63,7 @@ func (h *Handler) SimpanPermintaanLabPA(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoPermintaan, data.NoPermintaan)
 		h.encryptDetailPermintaanLabPA(data, idKunjungan)
 	}
 
@@ -153,6 +154,7 @@ func (h *Handler) DetailPermintaanLabPA(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoRawat, data.NoRawat)
 		h.encryptDetailPermintaanLabPA(data, "")
 	}
 
@@ -215,6 +217,7 @@ func (h *Handler) UpdatePermintaanLabPA(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoPermintaan, data.NoPermintaan)
 		h.encryptDetailPermintaanLabPA(data, idKunjungan)
 	}
 
@@ -258,6 +261,7 @@ func (h *Handler) HapusPermintaanLabPA(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) decryptTindakanLabPAPayload(req *SimpanPermintaanLabPARequest) error {
 	valErrs := make(apperror.ValidationError)
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 
 	for i := range req.Pemeriksaan {
 		kodeTindakan, err := crypto.Decrypt(req.Pemeriksaan[i].IdTindakan, h.encryptionKey)
@@ -265,6 +269,11 @@ func (h *Handler) decryptTindakanLabPAPayload(req *SimpanPermintaanLabPARequest)
 			valErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = "ID tindakan tidak valid"
 			continue
 		}
+		if seenTindakan[kodeTindakan] {
+			valErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan laboratorium tidak boleh duplikat", i+1)
+			continue
+		}
+		seenTindakan[kodeTindakan] = true
 		req.Pemeriksaan[i].KodeTindakan = kodeTindakan
 	}
 

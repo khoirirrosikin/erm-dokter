@@ -28,6 +28,7 @@ func provideRadiologi(
 		tindakanSvc,
 		cfg.MaxEditRekamMedisJam,
 		log,
+		cfg.KodePenjaminKunciBayar...,
 	)
 	return radiologi.NewHandler(svc, cfg.EncryptionKey)
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/apperror"
 )
@@ -48,6 +49,10 @@ func (s *service) SimpanPenilaianMedisRanapKandungan(ctx context.Context, kodeDo
 	}
 
 	if err := s.repo.SimpanPenilaianMedisRanapKandungan(ctx, noRawat, kodeDokterLogin, req); err != nil {
+		if database.IsDuplicateEntry(err) {
+			s.log.Warn("Percobaan duplikasi penilaian medis ranap kandungan pada no_rawat %s", noRawat)
+			return nil, apperror.NewBusinessError("Penilaian awal medis rawat inap kandungan untuk kunjungan ini sudah ada")
+		}
 		s.log.Error("Gagal menyimpan penilaian medis ranap kandungan no_rawat %s oleh dokter %s: %v", noRawat, kodeDokterLogin, err)
 		return nil, err
 	}

@@ -79,18 +79,35 @@ func (s *service) UpdatePermintaanLabPK(ctx context.Context, kodeDokterLogin, no
 }
 
 func (s *service) validasiTindakanDanTemplateLabPK(ctx context.Context, noRawat string, req SimpanPermintaanLabPKRequest) ([]string, map[string][]int, error) {
+	dupErrs := make(apperror.ValidationError)
 	var kodeTindakanList []string
 	templateMap := make(map[string][]int)
-	seenTindakan := make(map[string]bool)
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 
-	for _, item := range req.Pemeriksaan {
-		if !seenTindakan[item.KodeTindakan] {
+	for i, item := range req.Pemeriksaan {
+		prefix := fmt.Sprintf("pemeriksaan[%d]", i)
+		if item.KodeTindakan != "" {
+			if seenTindakan[item.KodeTindakan] {
+				dupErrs[prefix+".id_tindakan"] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan laboratorium tidak boleh duplikat", i+1)
+				continue
+			}
 			seenTindakan[item.KodeTindakan] = true
 			kodeTindakanList = append(kodeTindakanList, item.KodeTindakan)
 		}
 		if len(item.KodeTemplate) > 0 {
-			templateMap[item.KodeTindakan] = append(templateMap[item.KodeTindakan], item.KodeTemplate...)
+			seenTemplate := make(map[int]bool, len(item.KodeTemplate))
+			for j, idTmpl := range item.KodeTemplate {
+				if seenTemplate[idTmpl] {
+					dupErrs[fmt.Sprintf("%s.id_template[%d]", prefix, j)] = fmt.Sprintf("Pemeriksaan ke-%d parameter ke-%d: Template pengujian tidak boleh duplikat", i+1, j+1)
+					continue
+				}
+				seenTemplate[idTmpl] = true
+				templateMap[item.KodeTindakan] = append(templateMap[item.KodeTindakan], idTmpl)
+			}
 		}
+	}
+	if len(dupErrs) > 0 {
+		return nil, nil, dupErrs
 	}
 
 	foundTindakan, err := s.tindakanService.CekKeberadaanTindakanLab(ctx, shared.KategoriLabPK, kodeTindakanList)

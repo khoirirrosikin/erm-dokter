@@ -134,8 +134,12 @@ func (r *TambahDiagnosaRequest) Validate() apperror.ValidationError {
 		errs["kode"] = "Kode ICD-10 wajib diisi"
 	}
 
-	if r.Prioritas != nil && *r.Prioritas < 1 {
-		errs["prioritas"] = "Prioritas minimal 1"
+	if r.Prioritas != nil {
+		if *r.Prioritas < 1 {
+			errs["prioritas"] = "Prioritas minimal 1"
+		} else if *r.Prioritas > 127 {
+			errs["prioritas"] = "Prioritas maksimal 127"
+		}
 	}
 
 	if r.StatusPenyakit != "" && r.StatusPenyakit != "Baru" && r.StatusPenyakit != "Lama" {
@@ -164,8 +168,12 @@ func (r *UpdateDiagnosaRequest) Validate() apperror.ValidationError {
 		errs["payload"] = "Minimal salah satu dari prioritas atau status_penyakit harus diisi"
 	}
 
-	if r.Prioritas != nil && *r.Prioritas < 1 {
-		errs["prioritas"] = "Prioritas minimal 1"
+	if r.Prioritas != nil {
+		if *r.Prioritas < 1 {
+			errs["prioritas"] = "Prioritas minimal 1"
+		} else if *r.Prioritas > 127 {
+			errs["prioritas"] = "Prioritas maksimal 127"
+		}
 	}
 
 	if r.StatusPenyakit != "" && r.StatusPenyakit != "Baru" && r.StatusPenyakit != "Lama" {
@@ -194,8 +202,12 @@ func (r *TambahProsedurRequest) Validate() apperror.ValidationError {
 		errs["kode"] = "Kode ICD-9 wajib diisi"
 	}
 
-	if r.Prioritas != nil && *r.Prioritas < 1 {
-		errs["prioritas"] = "Prioritas minimal 1"
+	if r.Prioritas != nil {
+		if *r.Prioritas < 1 {
+			errs["prioritas"] = "Prioritas minimal 1"
+		} else if *r.Prioritas > 127 {
+			errs["prioritas"] = "Prioritas maksimal 127"
+		}
 	}
 
 	if len(errs) > 0 {
@@ -218,6 +230,8 @@ func (r *UpdateProsedurRequest) Validate() apperror.ValidationError {
 		errs["prioritas"] = "Prioritas wajib diisi"
 	} else if *r.Prioritas < 1 {
 		errs["prioritas"] = "Prioritas minimal 1"
+	} else if *r.Prioritas > 127 {
+		errs["prioritas"] = "Prioritas maksimal 127"
 	}
 
 	if len(errs) > 0 {
@@ -263,6 +277,8 @@ func (r *ReorderRequest) Validate() apperror.ValidationError {
 		}
 		if item.Prioritas < 1 {
 			errs[fmt.Sprintf("items[%d].prioritas", i)] = "Prioritas minimal 1"
+		} else if item.Prioritas > 127 {
+			errs[fmt.Sprintf("items[%d].prioritas", i)] = "Prioritas maksimal 127"
 		} else if seenPrioritas[item.Prioritas] {
 			errs[fmt.Sprintf("items[%d].prioritas", i)] = fmt.Sprintf("Prioritas %d duplikat dalam urutan", item.Prioritas)
 		} else {

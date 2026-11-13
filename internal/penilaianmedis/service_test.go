@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/rawatinap"
 	"erm-dokter/internal/rawatjalan"
@@ -254,7 +256,8 @@ func (m *mockRawatJalanService) DaftarJenisAntrean(ctx context.Context) []rawatj
 
 type mockRawatInapService struct {
 	rawatinap.Service
-	cekStatusKamarInapFunc func(ctx context.Context, noRawat string) (bool, bool, error)
+	cekStatusKamarInapFunc     func(ctx context.Context, noRawat string) (bool, bool, error)
+	getWaktuKeluarTerakhirFunc func(ctx context.Context, noRawat string) (string, string, error)
 }
 
 func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
@@ -262,6 +265,13 @@ func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat s
 		return m.cekStatusKamarInapFunc(ctx, noRawat)
 	}
 	return false, false, nil
+}
+
+func (m *mockRawatInapService) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	if m.getWaktuKeluarTerakhirFunc != nil {
+		return m.getWaktuKeluarTerakhirFunc(ctx, noRawat)
+	}
+	return "", "", nil
 }
 
 func TestService_Referensi(t *testing.T) {
@@ -2219,4 +2229,165 @@ func TestService_UpdateAndHapus_ErrNoRowsMapsToNotFound(t *testing.T) {
 		err = svc.HapusPenilaianMedisRanapKandungan(context.Background(), "DR001", "2026/04/22/000001")
 		assertNotFound(t, err)
 	})
+}
+
+func TestPenilaianMedis_PostCheckoutRanapAndWaktuKeluarCap(t *testing.T) {
+	now := time.Now()
+	oldReg := now.Add(-5 * 24 * time.Hour)
+	checkout := now.Add(-12 * time.Hour)
+	log := logger.New()
+
+	rjSvc := &mockRawatJalanService{
+		tglReg: oldReg.Format("2006-01-02"),
+		jamReg: oldReg.Format("15:04:05"),
+		exists: true,
+	}
+
+	t.Run("Ralan, IGD, dan Ranap diizinkan jika checkout <= 48 jam dan tanggal_penilaian <= waktu_keluar", func(t *testing.T) {
+		inputValid := checkout.Add(-1 * time.Hour).Format("2006-01-02 15:04:05")
+		repo := &mockRepository{
+			detailData:      &PenilaianMedisRalan{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			detailIGDData:   &PenilaianMedisIGD{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+			detailRanapData: &PenilaianMedisRanap{NoRawat: "2026/04/22/000001", KodeDokter: "DR001"},
+		}
+		riSvc := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := NewService(repo, rjSvc, riSvc, 48, log)
+
+		if _, err := svc.SimpanPenilaianMedisRalan(context.Background(), "DR001", "2026/04/22/000001", SimpanPenilaianMedisRalanRequest{
+			NoRawat:                 "2026/04/22/000001",
+			DataPenilaianMedisRalan: DataPenilaianMedisRalan{TanggalPenilaian: inputValid, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+		}); err != nil {
+			t.Fatalf("expected Ralan penilaian medis allowed post-checkout <= 48h, got %v", err)
+		}
+
+		if _, err := svc.SimpanPenilaianMedisIGD(context.Background(), "DR001", "2026/04/22/000001", SimpanPenilaianMedisIGDRequest{
+			NoRawat:               "2026/04/22/000001",
+			DataPenilaianMedisIGD: DataPenilaianMedisIGD{TanggalPenilaian: inputValid, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+		}); err != nil {
+			t.Fatalf("expected IGD penilaian medis allowed post-checkout <= 48h, got %v", err)
+		}
+
+		if _, err := svc.SimpanPenilaianMedisRanap(context.Background(), "DR001", "2026/04/22/000001", SimpanPenilaianMedisRanapRequest{
+			NoRawat:                 "2026/04/22/000001",
+			DataPenilaianMedisRanap: DataPenilaianMedisRanap{TanggalPenilaian: inputValid, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+		}); err != nil {
+			t.Fatalf("expected Ranap penilaian medis allowed post-checkout <= 48h, got %v", err)
+		}
+	})
+
+	t.Run("Ditolak ValidationError jika tanggal_penilaian > waktu_keluar", func(t *testing.T) {
+		inputAfter := checkout.Add(1 * time.Hour).Format("2006-01-02 15:04:05")
+		riSvc := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := NewService(&mockRepository{}, rjSvc, riSvc, 48, log)
+
+		_, err := svc.SimpanPenilaianMedisRanap(context.Background(), "DR001", "2026/04/22/000001", SimpanPenilaianMedisRanapRequest{
+			NoRawat:                 "2026/04/22/000001",
+			DataPenilaianMedisRanap: DataPenilaianMedisRanap{TanggalPenilaian: inputAfter, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+		})
+		var valErr apperror.ValidationError
+		if !errors.As(err, &valErr) || valErr["tanggal_penilaian"] == "" {
+			t.Fatalf("expected ValidationError on tanggal_penilaian when input > checkout, got %v", err)
+		}
+	})
+
+	t.Run("Ditolak ForbiddenError jika checkout > 48 jam", func(t *testing.T) {
+		expired := now.Add(-50 * time.Hour)
+		riSvc := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return expired.Format("2006-01-02"), expired.Format("15:04:05"), nil
+			},
+		}
+		svc := NewService(&mockRepository{}, rjSvc, riSvc, 48, log)
+
+		_, err := svc.SimpanPenilaianMedisRanap(context.Background(), "DR001", "2026/04/22/000001", SimpanPenilaianMedisRanapRequest{
+			NoRawat:                 "2026/04/22/000001",
+			DataPenilaianMedisRanap: DataPenilaianMedisRanap{TanggalPenilaian: expired.Add(-1 * time.Hour).Format("2006-01-02 15:04:05"), KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+		})
+		var fErr *apperror.ForbiddenError
+		if !errors.As(err, &fErr) {
+			t.Fatalf("expected ForbiddenError when > 48h post-checkout, got %v", err)
+		}
+	})
+}
+
+func TestService_SimpanPenilaianMedis_DuplicateEntry1062ReturnsBusinessError(t *testing.T) {
+	now := time.Now()
+	regTime := now.Add(-1 * time.Hour)
+	inputTime := now.Add(-10 * time.Minute).Format("2006-01-02 15:04:05")
+	noRawat := "2026/04/22/000001"
+	dupErr := &mysql.MySQLError{Number: 1062, Message: "Duplicate entry"}
+
+	rjSvc := &mockRawatJalanService{
+		tglReg: regTime.Format("2006-01-02"),
+		jamReg: regTime.Format("15:04:05"),
+		exists: true,
+	}
+	riSvc := &mockRawatInapService{
+		cekStatusKamarInapFunc: func(ctx context.Context, nr string) (bool, bool, error) {
+			return true, true, nil
+		},
+	}
+	repo := &mockRepository{
+		simpanErr:               dupErr,
+		simpanIGDErr:            dupErr,
+		simpanRanapErr:          dupErr,
+		simpanRalanKandunganErr: dupErr,
+		simpanRanapKandunganErr: dupErr,
+	}
+	svc := NewService(repo, rjSvc, riSvc, 48, logger.New())
+
+	assertBiz := func(label string, err error) {
+		t.Helper()
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("%s: expected *apperror.BusinessError on MySQL 1062, got %T (%v)", label, err, err)
+		}
+	}
+
+	_, err := svc.SimpanPenilaianMedisRalan(context.Background(), "DR001", noRawat, SimpanPenilaianMedisRalanRequest{
+		NoRawat:                 noRawat,
+		DataPenilaianMedisRalan: DataPenilaianMedisRalan{TanggalPenilaian: inputTime, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+	})
+	assertBiz("Ralan", err)
+
+	_, err = svc.SimpanPenilaianMedisRalanKandungan(context.Background(), "DR001", noRawat, SimpanPenilaianMedisRalanKandunganRequest{
+		NoRawat:                          noRawat,
+		DataPenilaianMedisRalanKandungan: DataPenilaianMedisRalanKandungan{TanggalPenilaian: inputTime, KeluhanUtama: "Kontrol", Diagnosis: "G1P0A0", TataLaksana: "Vitamin"},
+	})
+	assertBiz("RalanKandungan", err)
+
+	_, err = svc.SimpanPenilaianMedisIGD(context.Background(), "DR001", noRawat, SimpanPenilaianMedisIGDRequest{
+		NoRawat:               noRawat,
+		DataPenilaianMedisIGD: DataPenilaianMedisIGD{TanggalPenilaian: inputTime, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+	})
+	assertBiz("IGD", err)
+
+	_, err = svc.SimpanPenilaianMedisRanap(context.Background(), "DR001", noRawat, SimpanPenilaianMedisRanapRequest{
+		NoRawat:                 noRawat,
+		DataPenilaianMedisRanap: DataPenilaianMedisRanap{TanggalPenilaian: inputTime, KeluhanUtama: "Demam", Diagnosis: "Febris", TataLaksana: "PCT"},
+	})
+	assertBiz("Ranap", err)
+
+	_, err = svc.SimpanPenilaianMedisRanapKandungan(context.Background(), "DR001", noRawat, SimpanPenilaianMedisRanapKandunganRequest{
+		NoRawat:                          noRawat,
+		DataPenilaianMedisRanapKandungan: DataPenilaianMedisRanapKandungan{TanggalPenilaian: inputTime, KeluhanUtama: "Mules", Diagnosis: "G2P1A0", TataLaksana: "Observasi"},
+	})
+	assertBiz("RanapKandungan", err)
 }

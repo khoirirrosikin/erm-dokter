@@ -112,7 +112,8 @@ func (m *mockRawatJalanService) GetInfoRegistrasi(ctx context.Context, noRawat s
 
 type mockRawatInapService struct {
 	rawatinap.Service
-	cekStatusKamarInapFn func(ctx context.Context, noRawat string) (bool, bool, error)
+	cekStatusKamarInapFn     func(ctx context.Context, noRawat string) (bool, bool, error)
+	getWaktuKeluarTerakhirFn func(ctx context.Context, noRawat string) (string, string, error)
 }
 
 func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
@@ -120,6 +121,13 @@ func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat s
 		return m.cekStatusKamarInapFn(ctx, noRawat)
 	}
 	return false, false, nil
+}
+
+func (m *mockRawatInapService) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	if m.getWaktuKeluarTerakhirFn != nil {
+		return m.getWaktuKeluarTerakhirFn(ctx, noRawat)
+	}
+	return "", "", nil
 }
 
 type mockTindakanService struct {
@@ -523,4 +531,211 @@ func TestService_UpdateAndHapusPermintaanRadiologi_ErrNoRowsMapsToNotFound(t *te
 			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
 		}
 	})
+}
+
+func TestService_Radiologi_Bug14WindowStatusAndMultiPenjamin(t *testing.T) {
+	now := time.Now()
+	oldReg := now.Add(-50 * time.Hour)
+	checkout := now.Add(-12 * time.Hour)
+
+	t.Run("Ralan ditolak ForbiddenError jika > 48 jam dari registrasi meskipun masih aktif di kamar inap", func(t *testing.T) {
+		rj := &mockRawatJalanService{
+			getInfoRegistrasiFn: func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error) {
+				return &rawatjalan.InfoRegistrasiPasien{
+					TanggalRegistrasi: oldReg.Format("2006-01-02"),
+					JamRegistrasi:     oldReg.Format("15:04:05"),
+					KodePenjamin:      "UMU",
+					StatusBayar:       "Belum Bayar",
+				}, nil
+			},
+		}
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFn: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return true, true, nil
+			},
+		}
+		svc := createTestService(&mockRepository{}, rj, ri, nil)
+		_, err := svc.SimpanPermintaanRadiologi(context.Background(), "DR01", shared.StatusLanjutRawatJalan, radiologi.SimpanPermintaanRadiologiRequest{
+			NoRawat:           "2026/09/05/000001",
+			TanggalPermintaan: now.Format("2006-01-02"),
+			JamPermintaan:     now.Format("15:04:05"),
+			Pemeriksaan:       []radiologi.ItemPemeriksaanRadiologiRequest{{KodeTindakan: "RAD001"}},
+		})
+		var fErr *apperror.ForbiddenError
+		if !errors.As(err, &fErr) {
+			t.Fatalf("expected ForbiddenError for ralan > 48h even when active in ranap, got %v", err)
+		}
+	})
+
+	t.Run("Ranap checkout <= 48 jam diizinkan jika waktu_permintaan <= waktu_keluar, dan ditolak jika > waktu_keluar", func(t *testing.T) {
+		rj := &mockRawatJalanService{
+			getInfoRegistrasiFn: func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error) {
+				return &rawatjalan.InfoRegistrasiPasien{
+					TanggalRegistrasi: oldReg.Format("2006-01-02"),
+					JamRegistrasi:     oldReg.Format("15:04:05"),
+					KodePenjamin:      "UMU",
+					StatusBayar:       "Belum Bayar",
+				}, nil
+			},
+		}
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFn: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFn: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		validInput := checkout.Add(-1 * time.Hour)
+		repo := &mockRepository{
+			simpanPermintaanRadiologiFn: func(ctx context.Context, noRawat, kodeDokter string, statusLanjut shared.StatusLanjut, req radiologi.SimpanPermintaanRadiologiRequest, kodeTindakanList []string) (string, error) {
+				return "RAD202609050009", nil
+			},
+			detailPermintaanRadiologiFn: func(ctx context.Context, noPermintaan string) (*radiologi.DetailPermintaanRadiologi, error) {
+				return &radiologi.DetailPermintaanRadiologi{
+					PermintaanRadiologiHeader: radiologi.PermintaanRadiologiHeader{NoPermintaan: noPermintaan, Status: "Ranap"},
+				}, nil
+			},
+		}
+		svc := createTestService(repo, rj, ri, nil)
+		if _, err := svc.SimpanPermintaanRadiologi(context.Background(), "DR01", shared.StatusLanjutRawatInap, radiologi.SimpanPermintaanRadiologiRequest{
+			NoRawat:           "2026/09/05/000001",
+			TanggalPermintaan: validInput.Format("2006-01-02"),
+			JamPermintaan:     validInput.Format("15:04:05"),
+			Pemeriksaan:       []radiologi.ItemPemeriksaanRadiologiRequest{{KodeTindakan: "RAD001"}},
+		}); err != nil {
+			t.Fatalf("expected allowed post-checkout <= 48h with input <= checkout, got %v", err)
+		}
+
+		afterInput := checkout.Add(30 * time.Minute)
+		_, err := svc.SimpanPermintaanRadiologi(context.Background(), "DR01", shared.StatusLanjutRawatInap, radiologi.SimpanPermintaanRadiologiRequest{
+			NoRawat:           "2026/09/05/000001",
+			TanggalPermintaan: afterInput.Format("2006-01-02"),
+			JamPermintaan:     afterInput.Format("15:04:05"),
+			Pemeriksaan:       []radiologi.ItemPemeriksaanRadiologiRequest{{KodeTindakan: "RAD001"}},
+		})
+		var valErr apperror.ValidationError
+		if !errors.As(err, &valErr) || valErr["tanggal_permintaan"] == "" {
+			t.Fatalf("expected ValidationError on tanggal_permintaan when input > checkout, got %v", err)
+		}
+	})
+
+	t.Run("Update dan Hapus ditolak NotFoundError jika status_lanjut URL tidak cocok, dan multi-penjamin mengunci UMU", func(t *testing.T) {
+		repo := &mockRepository{
+			detailPermintaanRadiologiFn: func(ctx context.Context, noPermintaan string) (*radiologi.DetailPermintaanRadiologi, error) {
+				return &radiologi.DetailPermintaanRadiologi{
+					PermintaanRadiologiHeader: radiologi.PermintaanRadiologiHeader{
+						NoPermintaan:  noPermintaan,
+						NoRawat:       "2026/09/05/000001",
+						DokterPerujuk: radiologi.DokterInfo{KodeDokter: "DR01"},
+						Status:        "Ralan",
+						TanggalSampel: "0000-00-00",
+						TanggalHasil:  "0000-00-00",
+					},
+				}, nil
+			},
+		}
+		svc := radiologi.NewService(repo, &mockRawatJalanService{
+			getInfoRegistrasiFn: func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error) {
+				return &rawatjalan.InfoRegistrasiPasien{
+					TanggalRegistrasi: now.Add(-1 * time.Hour).Format("2006-01-02"),
+					JamRegistrasi:     now.Add(-1 * time.Hour).Format("15:04:05"),
+					KodePenjamin:      "UMU",
+					StatusBayar:       "Sudah Bayar",
+				}, nil
+			},
+		}, &mockRawatInapService{}, &mockTindakanService{}, 48, logger.New(), "BPJ", "UMU")
+
+		err := svc.HapusPermintaanRadiologi(context.Background(), "DR01", "2026/09/05/000001", "RAD01", shared.StatusLanjutRawatInap)
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected NotFoundError on status_lanjut mismatch, got %v", err)
+		}
+
+		err = svc.HapusPermintaanRadiologi(context.Background(), "DR01", "2026/09/05/000001", "RAD01", shared.StatusLanjutRawatJalan)
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("expected BusinessError when UMU configured in KODE_PENJAMIN_KUNCI_BAYAR, got %v", err)
+		}
+	})
+
+	t.Run("TanggalSampel/Hasil kosong tidak memicu false lock dan JamSampel non-zero tetap mengunci", func(t *testing.T) {
+		rjOk := &mockRawatJalanService{
+			getInfoRegistrasiFn: func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error) {
+				return &rawatjalan.InfoRegistrasiPasien{
+					TanggalRegistrasi: now.Add(-1 * time.Hour).Format("2006-01-02"),
+					JamRegistrasi:     now.Add(-1 * time.Hour).Format("15:04:05"),
+					KodePenjamin:      "UMU",
+					StatusBayar:       "Belum Bayar",
+				}, nil
+			},
+		}
+
+		repoEmpty := &mockRepository{
+			detailPermintaanRadiologiFn: func(ctx context.Context, noPermintaan string) (*radiologi.DetailPermintaanRadiologi, error) {
+				return &radiologi.DetailPermintaanRadiologi{
+					PermintaanRadiologiHeader: radiologi.PermintaanRadiologiHeader{
+						NoPermintaan:  noPermintaan,
+						NoRawat:       "2026/09/05/000001",
+						DokterPerujuk: radiologi.DokterInfo{KodeDokter: "DR01"},
+						Status:        "Ralan",
+						TanggalSampel: "",
+						JamSampel:     "",
+						TanggalHasil:  "",
+						JamHasil:      "",
+					},
+				}, nil
+			},
+			hapusPermintaanRadiologiFn: func(ctx context.Context, noPermintaan string) error {
+				return nil
+			},
+		}
+		svcEmpty := createTestService(repoEmpty, rjOk, &mockRawatInapService{}, nil)
+		if err := svcEmpty.HapusPermintaanRadiologi(context.Background(), "DR01", "2026/09/05/000001", "RAD01", shared.StatusLanjutRawatJalan); err != nil {
+			t.Fatalf("expected empty sampel/hasil fields not to false-lock, got %v", err)
+		}
+
+		repoJamOnly := &mockRepository{
+			detailPermintaanRadiologiFn: func(ctx context.Context, noPermintaan string) (*radiologi.DetailPermintaanRadiologi, error) {
+				return &radiologi.DetailPermintaanRadiologi{
+					PermintaanRadiologiHeader: radiologi.PermintaanRadiologiHeader{
+						NoPermintaan:  noPermintaan,
+						NoRawat:       "2026/09/05/000001",
+						DokterPerujuk: radiologi.DokterInfo{KodeDokter: "DR01"},
+						Status:        "Ralan",
+						TanggalSampel: "0000-00-00",
+						JamSampel:     "00:05:00",
+						TanggalHasil:  "0000-00-00",
+						JamHasil:      "00:00:00",
+					},
+				}, nil
+			},
+		}
+		svcJam := createTestService(repoJamOnly, rjOk, &mockRawatInapService{}, nil)
+		err := svcJam.HapusPermintaanRadiologi(context.Background(), "DR01", "2026/09/05/000001", "RAD01", shared.StatusLanjutRawatJalan)
+		var forbidden *apperror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("expected ForbiddenError when JamSampel is non-zero, got %v", err)
+		}
+	})
+}
+
+func TestService_SimpanPermintaanRadiologi_DuplicateKodeTindakan(t *testing.T) {
+	past := time.Now().Add(-5 * time.Minute)
+	svc := createTestService(&mockRepository{}, &mockRawatJalanService{}, &mockRawatInapService{}, &mockTindakanService{})
+
+	_, err := svc.SimpanPermintaanRadiologi(context.Background(), "DR01", shared.StatusLanjutRawatJalan, radiologi.SimpanPermintaanRadiologiRequest{
+		NoRawat:           "2026/09/05/000001",
+		TanggalPermintaan: past.Format("2006-01-02"),
+		JamPermintaan:     past.Format("15:04:05"),
+		DiagnosaKlinis:    "Susp Pneumonia",
+		Pemeriksaan: []radiologi.ItemPemeriksaanRadiologiRequest{
+			{KodeTindakan: "RAD001"},
+			{KodeTindakan: "RAD001"},
+		},
+	})
+	var valErr apperror.ValidationError
+	if !errors.As(err, &valErr) || valErr["pemeriksaan[1].id_tindakan"] == "" {
+		t.Fatalf("expected ValidationError on pemeriksaan[1].id_tindakan, got %v", err)
+	}
 }

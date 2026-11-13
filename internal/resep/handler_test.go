@@ -248,3 +248,100 @@ func TestResepHandler_DetailResep(t *testing.T) {
 		}
 	})
 }
+
+func TestResepHandler_DuplicateDecryptedObat(t *testing.T) {
+	noRawat := "2026/09/03/000001"
+	encKunjungan, _ := crypto.Encrypt(noRawat, testEncKey)
+	encObatA, _ := crypto.Encrypt("OB001", testEncKey)
+	encObatB, _ := crypto.Encrypt("OB001", testEncKey)
+	if encObatA == encObatB {
+		t.Fatal("expected distinct AES-GCM ciphertexts for same plaintext")
+	}
+	past := time.Now().Add(-5 * time.Minute)
+
+	mockSvc := &mockResepService{
+		simpanResepFn: func(ctx context.Context, kodeDokter string, statusLanjut shared.StatusLanjut, req resep.SimpanResepRequest) (*resep.Resep, error) {
+			return &resep.Resep{NoResep: "202609030001", NoRawat: req.NoRawat, Status: "ralan"}, nil
+		},
+	}
+
+	handler := resep.NewHandler(mockSvc, testEncKey)
+	mux := http.NewServeMux()
+	noOpMw := func(next http.HandlerFunc) http.HandlerFunc { return next }
+	handler.RegisterRoutes(mux, authMwForResep, noOpMw)
+
+	t.Run("Dua ciphertext berbeda untuk obat sama pada resep_dokter ditolak 400", func(t *testing.T) {
+		body, _ := json.Marshal(resep.SimpanResepRequest{
+			NoRawat:          noRawat,
+			TanggalPeresepan: past.Format("2006-01-02"),
+			JamPeresepan:     past.Format("15:04:05"),
+			ResepDokter: []resep.ResepDokterInput{
+				{ItemObatInput: resep.ItemObatInput{IdObat: encObatA, Jumlah: 5}, AturanPakai: "3x1"},
+				{ItemObatInput: resep.ItemObatInput{IdObat: encObatB, Jumlah: 5}, AturanPakai: "2x1"},
+			},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/resep/Ralan/"+encKunjungan, bytes.NewReader(body))
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("Dua ciphertext berbeda untuk obat sama dalam satu racikan ditolak 400", func(t *testing.T) {
+		body, _ := json.Marshal(resep.SimpanResepRequest{
+			NoRawat:          noRawat,
+			TanggalPeresepan: past.Format("2006-01-02"),
+			JamPeresepan:     past.Format("15:04:05"),
+			ResepRacikan: []resep.ResepRacikanInput{
+				{
+					NamaRacik:     "Puyer",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "3x1",
+					Detail: []resep.ResepRacikanDetailInput{
+						{ItemObatInput: resep.ItemObatInput{IdObat: encObatA, Jumlah: 5}},
+						{ItemObatInput: resep.ItemObatInput{IdObat: encObatB, Jumlah: 2}},
+					},
+				},
+			},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/resep/Ralan/"+encKunjungan, bytes.NewReader(body))
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("Obat sama antara resep_dokter dan resep_racikan tetap diizinkan 201", func(t *testing.T) {
+		body, _ := json.Marshal(resep.SimpanResepRequest{
+			NoRawat:          noRawat,
+			TanggalPeresepan: past.Format("2006-01-02"),
+			JamPeresepan:     past.Format("15:04:05"),
+			ResepDokter: []resep.ResepDokterInput{
+				{ItemObatInput: resep.ItemObatInput{IdObat: encObatA, Jumlah: 5}, AturanPakai: "3x1"},
+			},
+			ResepRacikan: []resep.ResepRacikanInput{
+				{
+					NamaRacik:     "Puyer",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "3x1",
+					Detail: []resep.ResepRacikanDetailInput{
+						{ItemObatInput: resep.ItemObatInput{IdObat: encObatB, Jumlah: 5}},
+					},
+				},
+			},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/resep/Ralan/"+encKunjungan, bytes.NewReader(body))
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+}

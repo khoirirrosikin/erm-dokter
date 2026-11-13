@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"erm-dokter/internal/master"
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/pkg/eklaim"
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/rawatinap"
@@ -28,7 +29,7 @@ type Service interface {
 	UpdateProsedur(ctx context.Context, id IdProsedur, req UpdateProsedurRequest) error
 	HapusProsedur(ctx context.Context, id IdProsedur) error
 	ReorderProsedur(ctx context.Context, noRawat string, status shared.StatusLanjut, req ReorderRequest) error
-	SimulasiEklaim(ctx context.Context, noRawat string, req SimulasiEklaimRequest) (*SimulasiEklaimResponse, error)
+	SimulasiEklaim(ctx context.Context, noRawat string, statusLanjut shared.StatusLanjut, req SimulasiEklaimRequest) (*SimulasiEklaimResponse, error)
 }
 
 type service struct {
@@ -153,6 +154,9 @@ func (s *service) TambahDiagnosa(ctx context.Context, noRawat string, status sha
 			return nil, err
 		}
 		prioritas = maxPrio + 1
+		if prioritas > 127 {
+			return nil, apperror.NewBusinessError("Jumlah urutan prioritas diagnosa telah mencapai batas maksimal (127)")
+		}
 	}
 
 	statusPenyakit := req.StatusPenyakit
@@ -169,6 +173,9 @@ func (s *service) TambahDiagnosa(ctx context.Context, noRawat string, status sha
 	}
 
 	if err := s.repo.TambahDiagnosa(ctx, diagnosa); err != nil {
+		if database.IsDuplicateEntry(err) {
+			return nil, apperror.NewBusinessError(fmt.Sprintf("Diagnosa dengan kode '%s' sudah diinput", req.Kode))
+		}
 		s.log.Error("Gagal menambah diagnosa no_rawat '%s', kode '%s': %v", noRawat, req.Kode, err)
 		return nil, err
 	}
@@ -267,6 +274,9 @@ func (s *service) TambahProsedur(ctx context.Context, noRawat string, status sha
 			return nil, err
 		}
 		prioritas = maxPrio + 1
+		if prioritas > 127 {
+			return nil, apperror.NewBusinessError("Jumlah urutan prioritas prosedur telah mencapai batas maksimal (127)")
+		}
 	}
 
 	prosedur := ProsedurPasien{
@@ -277,6 +287,9 @@ func (s *service) TambahProsedur(ctx context.Context, noRawat string, status sha
 	}
 
 	if err := s.repo.TambahProsedur(ctx, prosedur); err != nil {
+		if database.IsDuplicateEntry(err) {
+			return nil, apperror.NewBusinessError(fmt.Sprintf("Prosedur dengan kode '%s' sudah diinput", req.Kode))
+		}
 		s.log.Error("Gagal menambah prosedur no_rawat '%s', kode '%s': %v", noRawat, req.Kode, err)
 		return nil, err
 	}
@@ -394,9 +407,37 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat strin
 	}
 
 	if hasRecordKamar {
-		if !isAktifRanap {
+		if isAktifRanap {
+			return nil
+		}
+
+		tglKeluar, jamKeluar, err := s.rawatInapService.GetWaktuKeluarTerakhir(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil waktu keluar kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if tglKeluar == "" {
 			return apperror.NewBusinessError("Pasien sudah keluar dari kamar inap")
 		}
+
+		jamKeluarNorm := strings.TrimSpace(jamKeluar)
+		if jamKeluarNorm == "" {
+			jamKeluarNorm = "23:59:59"
+		}
+		waktuKeluar, err := shared.ParseWaktu(tglKeluar, jamKeluarNorm)
+		if err != nil {
+			s.log.Error("Gagal parse waktu keluar kamar inap no_rawat '%s' (%s %s): %v", noRawat, tglKeluar, jamKeluarNorm, err)
+			return err
+		}
+
+		batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+		if time.Now().After(batasWaktu) {
+			return apperror.NewForbiddenError(
+				fmt.Sprintf("Data diagnosa/prosedur tidak dapat %s, melewati batas %d jam setelah pasien keluar kamar inap", aksi, s.maxEditJam),
+				fmt.Sprintf("Kunjungan no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu keluar kamar inap (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+			)
+		}
+
 		return nil
 	}
 
@@ -415,7 +456,7 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat strin
 	return nil
 }
 
-func (s *service) SimulasiEklaim(ctx context.Context, noRawat string, req SimulasiEklaimRequest) (*SimulasiEklaimResponse, error) {
+func (s *service) SimulasiEklaim(ctx context.Context, noRawat string, statusLanjut shared.StatusLanjut, req SimulasiEklaimRequest) (*SimulasiEklaimResponse, error) {
 	cleanNoRawat := strings.TrimSpace(noRawat)
 	if cleanNoRawat == "" {
 		return nil, apperror.NewBusinessError("Nomor rawat wajib diisi")
@@ -434,8 +475,20 @@ func (s *service) SimulasiEklaim(ctx context.Context, noRawat string, req Simula
 		return nil, apperror.NewNotFoundError("Data kunjungan pasien tidak ditemukan")
 	}
 
-	statusLanjut := kunjungan.StatusLanjut
+	if statusLanjut == "" {
+		statusLanjut = kunjungan.StatusLanjut
+	}
 	isRanap := strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap))
+	if isRanap && !strings.EqualFold(string(kunjungan.StatusLanjut), string(shared.StatusLanjutRawatInap)) {
+		_, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, cleanNoRawat)
+		if err != nil {
+			s.log.Error("Gagal cek status kamar inap untuk simulasi E-Klaim no_rawat '%s': %v", cleanNoRawat, err)
+			return nil, err
+		}
+		if !hasRecordKamar {
+			return nil, apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		}
+	}
 
 	diagnosaList := req.Diagnosa
 	if len(diagnosaList) == 0 {
@@ -495,11 +548,17 @@ func (s *service) SimulasiEklaim(ctx context.Context, noRawat string, req Simula
 	}, cleanNoRawat)
 	nomorSEP := fmt.Sprintf("SIM-%s", cleanNoRawatAlnum)
 
+	today := time.Now().Format("2006-01-02")
 	tglMasuk := kunjungan.TanggalRegistrasi
-	tglPulang := kunjungan.TanggalRegistrasi
 	if tglMasuk == "" {
-		tglMasuk = time.Now().Format("2006-01-02")
-		tglPulang = tglMasuk
+		tglMasuk = today
+	}
+	tglPulang := tglMasuk
+	if isRanap {
+		tglPulang = today
+		if tglPulang < tglMasuk {
+			tglPulang = tglMasuk
+		}
 	}
 
 	param := eklaim.ParameterSimulasi{
@@ -519,7 +578,7 @@ func (s *service) SimulasiEklaim(ctx context.Context, noRawat string, req Simula
 		NamaDokter:    kunjungan.NamaDokterAsal,
 	}
 
-	simulasiCtx, simulasiCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	simulasiCtx, simulasiCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer simulasiCancel()
 
 	hasil, err := s.eklaimClient.SimulasiGrouper(simulasiCtx, param)

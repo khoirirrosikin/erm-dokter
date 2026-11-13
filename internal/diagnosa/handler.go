@@ -565,7 +565,14 @@ func (h *Handler) ReorderProsedur(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SimulasiEklaim(w http.ResponseWriter, r *http.Request) {
+	statusLanjut := r.PathValue("status_lanjut")
 	idKunjungan := r.PathValue("id_kunjungan")
+
+	status, ok := shared.ParseStatusLanjut(statusLanjut)
+	if !ok {
+		apperror.HandleError(w, apperror.NewBusinessError("Status lanjut tidak valid"))
+		return
+	}
 
 	noRawat, err := crypto.Decrypt(idKunjungan, h.encryptionKey)
 	if err != nil {
@@ -587,7 +594,7 @@ func (h *Handler) SimulasiEklaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.service.SimulasiEklaim(r.Context(), noRawat, req)
+	result, err := h.service.SimulasiEklaim(r.Context(), noRawat, status, req)
 	if err != nil {
 		apperror.HandleError(w, err)
 		return

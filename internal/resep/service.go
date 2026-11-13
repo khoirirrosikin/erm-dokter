@@ -28,25 +28,27 @@ type Service interface {
 }
 
 type service struct {
-	repo              Repository
-	rawatJalanService rawatjalan.Service
-	rawatInapService  rawatinap.Service
-	obatService       obat.Service
-	maxEditJam        int
-	log               *logger.Logger
+	repo                   Repository
+	rawatJalanService      rawatjalan.Service
+	rawatInapService       rawatinap.Service
+	obatService            obat.Service
+	maxEditJam             int
+	kodePenjaminKunciBayar []string
+	log                    *logger.Logger
 }
 
-func NewService(repo Repository, rawatJalanService rawatjalan.Service, rawatInapService rawatinap.Service, obatService obat.Service, maxEditJam int, log *logger.Logger) Service {
+func NewService(repo Repository, rawatJalanService rawatjalan.Service, rawatInapService rawatinap.Service, obatService obat.Service, maxEditJam int, log *logger.Logger, kodePenjaminKunciBayar ...string) Service {
 	if maxEditJam <= 0 {
 		maxEditJam = 48
 	}
 	return &service{
-		repo:              repo,
-		rawatJalanService: rawatJalanService,
-		rawatInapService:  rawatInapService,
-		obatService:       obatService,
-		maxEditJam:        maxEditJam,
-		log:               log,
+		repo:                   repo,
+		rawatJalanService:      rawatJalanService,
+		rawatInapService:       rawatInapService,
+		obatService:            obatService,
+		maxEditJam:             maxEditJam,
+		kodePenjaminKunciBayar: shared.NormalizeKodePenjaminKunciBayar(kodePenjaminKunciBayar),
+		log:                    log,
 	}
 }
 
@@ -115,7 +117,7 @@ func (s *service) HapusResep(ctx context.Context, kodeDokter, noRawat, noResep s
 		return err
 	}
 
-	if err := s.validasiAksesDanStatusResep(resep, noRawat, kodeDokter, "dihapus"); err != nil {
+	if err := s.validasiAksesDanStatusResep(resep, noRawat, kodeDokter, statusLanjut, "dihapus"); err != nil {
 		return err
 	}
 
@@ -153,11 +155,20 @@ func (s *service) UpdateResep(ctx context.Context, kodeDokter, noRawat, noResep 
 		return nil, err
 	}
 
-	if err := s.validasiAksesDanStatusResep(resep, noRawat, kodeDokter, "diubah"); err != nil {
+	if err := s.validasiAksesDanStatusResep(resep, noRawat, kodeDokter, statusLanjut, "diubah"); err != nil {
 		return nil, err
 	}
 
-	if err := s.validasiRegistrasiDanStatus(ctx, req.NoRawat, req.TanggalPeresepan, req.JamPeresepan, statusLanjut, "diubah"); err != nil {
+	orderStatus := statusLanjut
+	if orderStatus == "" {
+		if strings.EqualFold(resep.Status, string(shared.StatusLanjutRawatInap)) {
+			orderStatus = shared.StatusLanjutRawatInap
+		} else {
+			orderStatus = shared.StatusLanjutRawatJalan
+		}
+	}
+
+	if err := s.validasiRegistrasiDanStatus(ctx, req.NoRawat, req.TanggalPeresepan, req.JamPeresepan, orderStatus, "diubah"); err != nil {
 		return nil, err
 	}
 
@@ -177,19 +188,26 @@ func (s *service) UpdateResep(ctx context.Context, kodeDokter, noRawat, noResep 
 				fmt.Sprintf("Data resep no_resep '%s' tidak ditemukan", noResep),
 			)
 		}
-		s.log.Error("Gagal memperbarui resep obat no_resep '%s' untuk no_rawat '%s' (%s) oleh dokter '%s': %v", noResep, noRawat, statusLanjut, kodeDokter, err)
+		s.log.Error("Gagal memperbarui resep obat no_resep '%s' untuk no_rawat '%s' (%s) oleh dokter '%s': %v", noResep, noRawat, orderStatus, kodeDokter, err)
 		return nil, err
 	}
 
-	s.log.Info("Berhasil memperbarui resep obat no_resep '%s' untuk no_rawat '%s' (%s %s, %s) oleh dokter '%s'", updatedResep.NoResep, noRawat, req.TanggalPeresepan, req.JamPeresepan, statusLanjut, kodeDokter)
+	s.log.Info("Berhasil memperbarui resep obat no_resep '%s' untuk no_rawat '%s' (%s %s, %s) oleh dokter '%s'", updatedResep.NoResep, noRawat, req.TanggalPeresepan, req.JamPeresepan, orderStatus, kodeDokter)
 	return updatedResep, nil
 }
 
-func (s *service) validasiAksesDanStatusResep(resep *Resep, noRawat, kodeDokter, action string) error {
+func (s *service) validasiAksesDanStatusResep(resep *Resep, noRawat, kodeDokter string, statusLanjut shared.StatusLanjut, action string) error {
 	if resep.NoRawat != noRawat {
 		return apperror.NewNotFoundError(
 			"Resep obat tidak ditemukan",
 			fmt.Sprintf("Data resep no_resep '%s' tidak ditemukan untuk no_rawat '%s'", resep.NoResep, noRawat),
+		)
+	}
+
+	if statusLanjut != "" && statusLanjut != shared.StatusLanjutSemua && !strings.EqualFold(strings.TrimSpace(resep.Status), string(statusLanjut)) {
+		return apperror.NewNotFoundError(
+			"Resep obat tidak ditemukan",
+			fmt.Sprintf("Data resep no_resep '%s' berstatus '%s', tidak sesuai dengan status '%s'", resep.NoResep, resep.Status, statusLanjut),
 		)
 	}
 
@@ -198,12 +216,12 @@ func (s *service) validasiAksesDanStatusResep(resep *Resep, noRawat, kodeDokter,
 		return apperror.NewForbiddenError(fmt.Sprintf("Resep obat dokter lain tidak dapat %s", action))
 	}
 
-	if resep.TanggalPerawatan != "0000-00-00" && resep.JamPerawatan != "00:00:00" {
+	if shared.IsNonZeroDate(resep.TanggalPerawatan) || shared.IsNonZeroTime(resep.JamPerawatan) {
 		s.log.Warn("Percobaan %s resep no_resep %s ditolak: telah divalidasi farmasi pada %s %s", action, resep.NoResep, resep.TanggalPerawatan, resep.JamPerawatan)
 		return apperror.NewForbiddenError(fmt.Sprintf("Resep obat telah divalidasi farmasi, tidak dapat %s", action))
 	}
 
-	if resep.TanggalPenyerahan != "0000-00-00" && resep.JamPenyerahan != "00:00:00" {
+	if shared.IsNonZeroDate(resep.TanggalPenyerahan) || shared.IsNonZeroTime(resep.JamPenyerahan) {
 		s.log.Warn("Percobaan %s resep no_resep %s ditolak: telah diserahkan ke pasien pada %s %s", action, resep.NoResep, resep.TanggalPenyerahan, resep.JamPenyerahan)
 		return apperror.NewForbiddenError(fmt.Sprintf("Resep obat telah diserahkan ke pasien, tidak dapat %s", action))
 	}
@@ -212,19 +230,35 @@ func (s *service) validasiAksesDanStatusResep(resep *Resep, noRawat, kodeDokter,
 }
 
 func (s *service) validasiKeberadaanObat(ctx context.Context, req SimpanResepRequest) error {
-
+	dupErrs := make(apperror.ValidationError)
 	listKode := make([]string, 0)
-	for _, rd := range req.ResepDokter {
+
+	seenDokter := make(map[string]bool, len(req.ResepDokter))
+	for i, rd := range req.ResepDokter {
 		if rd.KodeObat != "" {
+			if seenDokter[rd.KodeObat] {
+				dupErrs[fmt.Sprintf("resep_dokter[%d].id_obat", i)] = fmt.Sprintf("Obat ke-%d: Obat tidak boleh duplikat dalam daftar non-racikan", i+1)
+				continue
+			}
+			seenDokter[rd.KodeObat] = true
 			listKode = append(listKode, rd.KodeObat)
 		}
 	}
-	for _, rr := range req.ResepRacikan {
-		for _, d := range rr.Detail {
+	for i, rr := range req.ResepRacikan {
+		seenDetail := make(map[string]bool, len(rr.Detail))
+		for j, d := range rr.Detail {
 			if d.KodeObat != "" {
+				if seenDetail[d.KodeObat] {
+					dupErrs[fmt.Sprintf("resep_racikan[%d].detail[%d].id_obat", i, j)] = fmt.Sprintf("Racikan ke-%d bahan ke-%d: Bahan obat tidak boleh duplikat dalam satu racikan", i+1, j+1)
+					continue
+				}
+				seenDetail[d.KodeObat] = true
 				listKode = append(listKode, d.KodeObat)
 			}
 		}
+	}
+	if len(dupErrs) > 0 {
+		return dupErrs
 	}
 
 	if len(listKode) == 0 {
@@ -300,8 +334,8 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if infoRegistrasi.StatusBayar == "Sudah Bayar" && infoRegistrasi.KodePenjamin == "BPJ" {
-		return apperror.NewBusinessError(fmt.Sprintf("Pasien BPJS sudah bayar, resep tidak dapat %s", aksi))
+	if shared.IsPenjaminTerkunciSudahBayar(infoRegistrasi.StatusBayar, infoRegistrasi.KodePenjamin, s.kodePenjaminKunciBayar) {
+		return apperror.NewBusinessError(shared.PesanTerkunciSudahBayar(infoRegistrasi.KodePenjamin, "resep", aksi))
 	}
 
 	tanggalRegistrasi := infoRegistrasi.TanggalRegistrasi
@@ -313,8 +347,10 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if tanggalPeresepan != "" && jamPeresepan != "" {
-		waktuPeresepan, err := shared.ParseWaktu(tanggalPeresepan, jamPeresepan)
+	var waktuPeresepan time.Time
+	hasWaktuInput := tanggalPeresepan != "" && jamPeresepan != ""
+	if hasWaktuInput {
+		waktuPeresepan, err = shared.ParseWaktu(tanggalPeresepan, jamPeresepan)
 		if err != nil {
 			return apperror.NewBusinessError(err.Error())
 		}
@@ -326,21 +362,53 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		}
 	}
 
-	isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
-	if err != nil {
-		s.log.Error("Gagal cek status kamar inap untuk no_rawat '%s': %v", noRawat, err)
-		return err
-	}
+	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
+		isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal cek status kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if !hasRecordKamar {
+			return apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		}
+		if isAktifRanap {
+			return nil
+		}
 
-	if hasRecordKamar {
-		if !isAktifRanap {
+		tglKeluar, jamKeluar, err := s.rawatInapService.GetWaktuKeluarTerakhir(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil waktu keluar kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if tglKeluar == "" {
 			return apperror.NewBusinessError("Pasien sudah keluar dari kamar inap")
 		}
-		return nil
-	}
 
-	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
-		return apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		jamKeluarNorm := strings.TrimSpace(jamKeluar)
+		if jamKeluarNorm == "" {
+			jamKeluarNorm = "23:59:59"
+		}
+		waktuKeluar, err := shared.ParseWaktu(tglKeluar, jamKeluarNorm)
+		if err != nil {
+			s.log.Error("Gagal parse waktu keluar kamar inap no_rawat '%s' (%s %s): %v", noRawat, tglKeluar, jamKeluarNorm, err)
+			return err
+		}
+
+		batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+		if time.Now().After(batasWaktu) {
+			return apperror.NewForbiddenError(
+				fmt.Sprintf("Resep obat tidak dapat %s, melewati batas %d jam setelah pasien keluar kamar inap", aksi, s.maxEditJam),
+				fmt.Sprintf("Resep obat no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu keluar kamar inap (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+			)
+		}
+
+		if hasWaktuInput && waktuPeresepan.After(waktuKeluar) {
+			return apperror.ValidationError{
+				"tanggal_peresepan": fmt.Sprintf("Waktu peresepan (%s %s) tidak boleh melebihi waktu pulang kamar inap (%s %s)", tanggalPeresepan, jamPeresepan, tglKeluar, jamKeluarNorm),
+			}
+		}
+
+		return nil
 	}
 
 	batasWaktu := waktuRegistrasi.Add(time.Duration(s.maxEditJam) * time.Hour)

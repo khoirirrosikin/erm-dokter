@@ -334,6 +334,17 @@ func TestSimpanRujukanInternal_DuplicateAndWindowAndBPJS(t *testing.T) {
 			t.Fatalf("expected BusinessError, got %v", err)
 		}
 	})
+
+	t.Run("Multi kode penjamin kunci bayar mengunci UMU saat Sudah Bayar", func(t *testing.T) {
+		rjSvc := &mockRawatJalanService{tglReg: today, jamReg: "08:00:00", exists: true, kdPenjamin: "UMU", statusBayar: "Sudah Bayar"}
+		svc := NewService(&mockRepository{}, rjSvc, 48, log, "BPJ", "UMU")
+
+		_, err := svc.SimpanRujukanInternal(context.Background(), "DR001", "2026/04/22/000001", "INT", "DR002")
+		var bErr *apperror.BusinessError
+		if !errors.As(err, &bErr) {
+			t.Fatalf("expected BusinessError when UMU configured in KODE_PENJAMIN_KUNCI_BAYAR, got %v", err)
+		}
+	})
 }
 
 func TestHapusRujukanInternal_AuthorizationAndClinicalLock(t *testing.T) {

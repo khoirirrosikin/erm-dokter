@@ -211,10 +211,17 @@ func (req SimpanPermintaanRadiologiRequest) Validate() apperror.ValidationError 
 		errs["pemeriksaan"] = "Pemeriksaan radiologi minimal harus memilih 1 tindakan"
 	}
 
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 	for i, item := range req.Pemeriksaan {
 		if item.IdTindakan == "" {
 			errs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: ID tindakan wajib diisi", i+1)
+			continue
 		}
+		if seenTindakan[item.IdTindakan] {
+			errs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan radiologi tidak boleh duplikat", i+1)
+			continue
+		}
+		seenTindakan[item.IdTindakan] = true
 	}
 
 	if len(errs) > 0 {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/shared"
 	"erm-dokter/internal/shared/apperror"
 )
@@ -46,6 +47,9 @@ func (s *service) SimpanResumePasienRanap(ctx context.Context, noRawat, kodeDokt
 
 	item, err := s.repo.SimpanResumePasienRanap(ctx, noRawat, kodeDokter, req)
 	if err != nil {
+		if database.IsDuplicateEntry(err) {
+			return nil, apperror.NewBusinessError("Resume medis rawat inap untuk kunjungan ini sudah ada")
+		}
 		s.log.Error("Gagal menyimpan resume pasien ranap no_rawat %s: %v", noRawat, err)
 		return nil, err
 	}

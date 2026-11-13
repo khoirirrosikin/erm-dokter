@@ -7,6 +7,7 @@ type StatusLanjut string
 const (
 	StatusLanjutRawatJalan StatusLanjut = "Ralan"
 	StatusLanjutRawatInap  StatusLanjut = "Ranap"
+	StatusLanjutSemua      StatusLanjut = "Semua"
 )
 
 func (s StatusLanjut) IsValid() bool {
@@ -31,7 +32,7 @@ func ParseStatusLanjut(val string) (StatusLanjut, bool) {
 
 func ParseStatusLanjutWithSemua(val string) (StatusLanjut, bool) {
 	if strings.ToLower(strings.TrimSpace(val)) == "semua" {
-		return "Semua", true
+		return StatusLanjutSemua, true
 	}
 	return ParseStatusLanjut(val)
 }

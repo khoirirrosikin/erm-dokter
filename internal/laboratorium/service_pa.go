@@ -79,14 +79,22 @@ func (s *service) UpdatePermintaanLabPA(ctx context.Context, kodeDokterLogin, no
 }
 
 func (s *service) validasiTindakanLabPA(ctx context.Context, noRawat string, req SimpanPermintaanLabPARequest) ([]string, error) {
+	dupErrs := make(apperror.ValidationError)
 	var kodeTindakanList []string
-	seenTindakan := make(map[string]bool)
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 
-	for _, item := range req.Pemeriksaan {
-		if !seenTindakan[item.KodeTindakan] {
+	for i, item := range req.Pemeriksaan {
+		if item.KodeTindakan != "" {
+			if seenTindakan[item.KodeTindakan] {
+				dupErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan laboratorium tidak boleh duplikat", i+1)
+				continue
+			}
 			seenTindakan[item.KodeTindakan] = true
 			kodeTindakanList = append(kodeTindakanList, item.KodeTindakan)
 		}
+	}
+	if len(dupErrs) > 0 {
+		return nil, dupErrs
 	}
 
 	foundTindakan, err := s.tindakanService.CekKeberadaanTindakanLab(ctx, shared.KategoriLabPA, kodeTindakanList)

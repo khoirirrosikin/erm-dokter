@@ -35,6 +35,7 @@ func provideLaboratorium(
 		cfg.KodeBerkasLabPA,
 		cfg.KodeBerkasLabMB,
 		log,
+		cfg.KodePenjaminKunciBayar...,
 	)
 	return laboratorium.NewHandler(svc, cfg.EncryptionKey)
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/rawatinap"
 	"erm-dokter/internal/rawatjalan"
@@ -949,5 +951,43 @@ func TestService_ResumePasienRanap_PostDischargeLock(t *testing.T) {
 
 		err = svc.HapusResumePasienRanap(context.Background(), "DR01", noRawat)
 		assertForbidden("HapusResumePasienRanap", err)
+	})
+}
+
+func TestService_SimpanResumePasien_DuplicateEntry1062ReturnsBusinessError(t *testing.T) {
+	now := time.Now().Add(-1 * time.Hour)
+	noRawat := "2026/09/07/000001"
+	dupErr := &mysql.MySQLError{Number: 1062, Message: "Duplicate entry"}
+
+	t.Run("Ralan race condition 1062 mengembalikan BusinessError", func(t *testing.T) {
+		repo := &mockRepository{adaResult: false, simpanErr: dupErr}
+		rj := &mockRawatJalanService{tglReg: now.Format("2006-01-02"), jamReg: now.Format("15:04:05"), exists: true}
+		ri := &mockRawatInapService{isAktifRanap: false, hasRecordKamar: false}
+		svc := setupTestService(repo, rj, ri)
+
+		_, err := svc.SimpanResumePasienRalan(context.Background(), noRawat, "DR01", resumepasien.SimpanResumePasienRalanRequest{
+			NoRawat:               noRawat,
+			DataResumePasienRalan: resumepasien.DataResumePasienRalan{KeluhanUtama: "Batuk", DiagnosaUtama: "ISPA"},
+		})
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("expected *apperror.BusinessError on Ralan 1062, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("Ranap race condition 1062 mengembalikan BusinessError", func(t *testing.T) {
+		repo := &mockRepository{adaRanapResult: false, simpanRanapErr: dupErr}
+		rj := &mockRawatJalanService{tglReg: now.Format("2006-01-02"), jamReg: now.Format("15:04:05"), exists: true}
+		ri := &mockRawatInapService{isAktifRanap: true, hasRecordKamar: true}
+		svc := setupTestService(repo, rj, ri)
+
+		_, err := svc.SimpanResumePasienRanap(context.Background(), noRawat, "DR01", resumepasien.SimpanResumePasienRanapRequest{
+			NoRawat:               noRawat,
+			DataResumePasienRanap: resumepasien.DataResumePasienRanap{KeluhanUtama: "Demam", DiagnosaUtama: "DBD"},
+		})
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("expected *apperror.BusinessError on Ranap 1062, got %T (%v)", err, err)
+		}
 	})
 }

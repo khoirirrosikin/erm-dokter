@@ -23,21 +23,23 @@ type Service interface {
 }
 
 type service struct {
-	repo              Repository
-	rawatJalanService rawatjalan.Service
-	maxEditJam        int
-	log               *logger.Logger
+	repo                   Repository
+	rawatJalanService      rawatjalan.Service
+	maxEditJam             int
+	kodePenjaminKunciBayar []string
+	log                    *logger.Logger
 }
 
-func NewService(repo Repository, rawatJalanService rawatjalan.Service, maxEditJam int, log *logger.Logger) Service {
+func NewService(repo Repository, rawatJalanService rawatjalan.Service, maxEditJam int, log *logger.Logger, kodePenjaminKunciBayar ...string) Service {
 	if maxEditJam <= 0 {
 		maxEditJam = 48
 	}
 	return &service{
-		repo:              repo,
-		rawatJalanService: rawatJalanService,
-		maxEditJam:        maxEditJam,
-		log:               log,
+		repo:                   repo,
+		rawatJalanService:      rawatJalanService,
+		maxEditJam:             maxEditJam,
+		kodePenjaminKunciBayar: shared.NormalizeKodePenjaminKunciBayar(kodePenjaminKunciBayar),
+		log:                    log,
 	}
 }
 
@@ -230,8 +232,8 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, aksi
 		return nil, apperror.NewBusinessError(fmt.Sprintf("Kunjungan pasien berstatus batal, rujukan tidak dapat %s", aksi))
 	}
 
-	if infoRegistrasi.StatusBayar == "Sudah Bayar" && infoRegistrasi.KodePenjamin == "BPJ" {
-		return nil, apperror.NewBusinessError(fmt.Sprintf("Pasien BPJS sudah bayar, rujukan tidak dapat %s", aksi))
+	if shared.IsPenjaminTerkunciSudahBayar(infoRegistrasi.StatusBayar, infoRegistrasi.KodePenjamin, s.kodePenjaminKunciBayar) {
+		return nil, apperror.NewBusinessError(shared.PesanTerkunciSudahBayar(infoRegistrasi.KodePenjamin, "rujukan", aksi))
 	}
 
 	tanggalRegistrasi := infoRegistrasi.TanggalRegistrasi

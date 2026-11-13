@@ -81,7 +81,8 @@ func (m *mockRawatJalanService) GetWaktuRegistrasi(ctx context.Context, noRawat 
 
 type mockRawatInapService struct {
 	rawatinap.Service
-	cekStatusKamarInapFunc func(ctx context.Context, noRawat string) (bool, bool, error)
+	cekStatusKamarInapFunc     func(ctx context.Context, noRawat string) (bool, bool, error)
+	getWaktuKeluarTerakhirFunc func(ctx context.Context, noRawat string) (string, string, error)
 }
 
 func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
@@ -89,6 +90,13 @@ func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat s
 		return m.cekStatusKamarInapFunc(ctx, noRawat)
 	}
 	return false, false, nil
+}
+
+func (m *mockRawatInapService) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	if m.getWaktuKeluarTerakhirFunc != nil {
+		return m.getWaktuKeluarTerakhirFunc(ctx, noRawat)
+	}
+	return "", "", nil
 }
 
 func TestDaftarKesadaran(t *testing.T) {
@@ -1455,6 +1463,97 @@ func TestUpdateAndHapusPemeriksaan_ErrNoRowsMapsToNotFound(t *testing.T) {
 		var notFound *apperror.NotFoundError
 		if !errors.As(err, &notFound) {
 			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+}
+
+func TestPemeriksaan_PostCheckoutRanapAndWaktuKeluarCap(t *testing.T) {
+	now := time.Now()
+	oldReg := now.Add(-5 * 24 * time.Hour)
+	checkout := now.Add(-12 * time.Hour)
+
+	rj := &mockRawatJalanService{
+		getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+			return oldReg.Format("2006-01-02"), oldReg.Format("15:04:05"), true, nil
+		},
+	}
+
+	makeReq := func(ts time.Time) pemeriksaan.SimpanPemeriksaanRequest {
+		return pemeriksaan.SimpanPemeriksaanRequest{
+			NoRawat: "2026/08/01/000001",
+			DataPemeriksaan: pemeriksaan.DataPemeriksaan{
+				TanggalPemeriksaan:  ts.Format("2006-01-02"),
+				JamPemeriksaan:      ts.Format("15:04:05"),
+				Kesadaran:           pemeriksaan.KesadaranComposMentis,
+				Keluhan:             "Keluhan",
+				Pemeriksaan:         "Pemeriksaan",
+				Penilaian:           "Penilaian",
+				RencanaTindakLanjut: "RTL",
+				Instruksi:           "Instruksi",
+				Evaluasi:            "Evaluasi",
+			},
+		}
+	}
+
+	t.Run("Diizinkan untuk ranap dan ralan jika checkout <= 48 jam dan waktu_pemeriksaan <= waktu_keluar", func(t *testing.T) {
+		inputValid := checkout.Add(-1 * time.Hour)
+		repo := &mockRepository{
+			detailPemeriksaanFunc: func(ctx context.Context, id pemeriksaan.IdPemeriksaan, statusLanjut shared.StatusLanjut) (*pemeriksaan.Pemeriksaan, error) {
+				return &pemeriksaan.Pemeriksaan{NoRawat: id.NoRawat, StatusLanjut: statusLanjut}, nil
+			},
+		}
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := pemeriksaan.NewService(repo, rj, ri, 48, logger.New())
+
+		for _, st := range []shared.StatusLanjut{shared.StatusLanjutRawatInap, shared.StatusLanjutRawatJalan} {
+			if _, err := svc.SimpanPemeriksaan(context.Background(), "DK001", st, makeReq(inputValid)); err != nil {
+				t.Fatalf("expected allowed for %s post-checkout <= 48h, got %v", st, err)
+			}
+		}
+	})
+
+	t.Run("Ditolak ValidationError jika checkout <= 48 jam tapi waktu_pemeriksaan > waktu_keluar", func(t *testing.T) {
+		inputAfter := checkout.Add(30 * time.Minute)
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := pemeriksaan.NewService(&mockRepository{}, rj, ri, 48, logger.New())
+
+		_, err := svc.SimpanPemeriksaan(context.Background(), "DK001", shared.StatusLanjutRawatInap, makeReq(inputAfter))
+		var valErr apperror.ValidationError
+		if !errors.As(err, &valErr) || valErr["tanggal_pemeriksaan"] == "" {
+			t.Fatalf("expected ValidationError on tanggal_pemeriksaan when input > checkout, got %v", err)
+		}
+	})
+
+	t.Run("Ditolak ForbiddenError jika checkout > 48 jam", func(t *testing.T) {
+		expiredCheckout := now.Add(-50 * time.Hour)
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return expiredCheckout.Format("2006-01-02"), expiredCheckout.Format("15:04:05"), nil
+			},
+		}
+		svc := pemeriksaan.NewService(&mockRepository{}, rj, ri, 48, logger.New())
+
+		_, err := svc.SimpanPemeriksaan(context.Background(), "DK001", shared.StatusLanjutRawatInap, makeReq(expiredCheckout.Add(-1*time.Hour)))
+		var fErr *apperror.ForbiddenError
+		if !errors.As(err, &fErr) {
+			t.Fatalf("expected ForbiddenError when > 48h post-checkout, got %v", err)
 		}
 	})
 }

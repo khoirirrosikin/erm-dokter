@@ -97,14 +97,20 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tglP
 		return err
 	}
 
+	var waktuPenilaian time.Time
+	var hasWaktuInput bool
 	if tglPenilaian != "" {
-		waktuPenilaian, errPer := time.ParseInLocation("2006-01-02 15:04:05", tglPenilaian, time.Local)
-		if errPer == nil && waktuPenilaian.Before(waktuRegistrasi) {
-			errs := apperror.ValidationError{
-				"tanggal_penilaian": fmt.Sprintf("Waktu penilaian medis (%s) tidak boleh sebelum registrasi (%s %s)", tglPenilaian, tanggalRegistrasi, jamRegistrasi),
+		parsedWaktu, errPer := time.ParseInLocation("2006-01-02 15:04:05", tglPenilaian, time.Local)
+		if errPer == nil {
+			waktuPenilaian = parsedWaktu
+			hasWaktuInput = true
+			if waktuPenilaian.Before(waktuRegistrasi) {
+				errs := apperror.ValidationError{
+					"tanggal_penilaian": fmt.Sprintf("Waktu penilaian medis (%s) tidak boleh sebelum registrasi (%s %s)", tglPenilaian, tanggalRegistrasi, jamRegistrasi),
+				}
+				s.log.Warn("Validasi waktu penilaian medis gagal untuk no_rawat %s: %+v", noRawat, errs)
+				return errs
 			}
-			s.log.Warn("Validasi waktu penilaian medis gagal untuk no_rawat %s: %+v", noRawat, errs)
-			return errs
 		}
 	}
 
@@ -115,9 +121,45 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tglP
 	}
 
 	if hasRecordKamar {
-		if !isAktifRanap {
+		if isAktifRanap {
+			return nil
+		}
+
+		tglKeluar, jamKeluar, err := s.rawatInapService.GetWaktuKeluarTerakhir(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil waktu keluar kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if tglKeluar == "" {
 			return apperror.NewBusinessError("Pasien sudah keluar dari kamar inap")
 		}
+
+		jamKeluarNorm := strings.TrimSpace(jamKeluar)
+		if jamKeluarNorm == "" {
+			jamKeluarNorm = "23:59:59"
+		}
+		waktuKeluar, err := shared.ParseWaktu(tglKeluar, jamKeluarNorm)
+		if err != nil {
+			s.log.Error("Gagal parse waktu keluar kamar inap no_rawat '%s' (%s %s): %v", noRawat, tglKeluar, jamKeluarNorm, err)
+			return err
+		}
+
+		batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+		if time.Now().After(batasWaktu) {
+			return apperror.NewForbiddenError(
+				fmt.Sprintf("Penilaian medis tidak dapat %s, melewati batas %d jam setelah pasien keluar kamar inap", aksi, s.maxEditJam),
+				fmt.Sprintf("Penilaian medis no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu keluar kamar inap (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+			)
+		}
+
+		if hasWaktuInput && waktuPenilaian.After(waktuKeluar) {
+			errs := apperror.ValidationError{
+				"tanggal_penilaian": fmt.Sprintf("Waktu penilaian medis (%s) tidak boleh melebihi waktu pulang kamar inap (%s %s)", tglPenilaian, tglKeluar, jamKeluarNorm),
+			}
+			s.log.Warn("Validasi waktu penilaian medis pasca-pulang gagal untuk no_rawat %s: %+v", noRawat, errs)
+			return errs
+		}
+
 		return nil
 	}
 

@@ -16,6 +16,6 @@ func provideRujukanInternal(
 	rawatJalanSvc rawatjalan.Service,
 ) *rujukaninternal.Handler {
 	repo := rujukaninternal.NewRepository(db)
-	svc := rujukaninternal.NewService(repo, rawatJalanSvc, cfg.MaxEditRekamMedisJam, log)
+	svc := rujukaninternal.NewService(repo, rawatJalanSvc, cfg.MaxEditRekamMedisJam, log, cfg.KodePenjaminKunciBayar...)
 	return rujukaninternal.NewHandler(svc, cfg.EncryptionKey)
 }

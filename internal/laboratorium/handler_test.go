@@ -1219,3 +1219,99 @@ func TestHandler_DetailEndpoints_RejectSemua(t *testing.T) {
 		})
 	}
 }
+
+func TestHandler_SimpanPermintaanLab_DuplicateDecryptedItems(t *testing.T) {
+	noRawat := "2026/04/22/000001"
+	encKunjungan, _ := crypto.Encrypt(noRawat, testEncryptionKey)
+	encTindakanA, _ := crypto.Encrypt("LAB01", testEncryptionKey)
+	encTindakanB, _ := crypto.Encrypt("LAB01", testEncryptionKey)
+	encTmplA, _ := crypto.Encrypt("101", testEncryptionKey)
+	encTmplB, _ := crypto.Encrypt("101", testEncryptionKey)
+
+	handler := laboratorium.NewHandler(&mockService{}, testEncryptionKey)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux, authMiddlewareForTest, func(next http.HandlerFunc) http.HandlerFunc { return next })
+
+	cases := []struct {
+		name string
+		url  string
+		body any
+	}{
+		{
+			name: "PK duplikat tindakan dari dua ciphertext berbeda",
+			url:  "/api/v1/laboratorium/pk/permintaan/Ralan/" + encKunjungan,
+			body: laboratorium.SimpanPermintaanLabPKRequest{
+				PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+					NoRawat:           noRawat,
+					TanggalPermintaan: "2026-04-22",
+					JamPermintaan:     "10:00:00",
+					DiagnosaKlinis:    "Febris",
+				},
+				Pemeriksaan: []laboratorium.ItemPemeriksaanLabPKRequest{
+					{IdTindakan: encTindakanA},
+					{IdTindakan: encTindakanB},
+				},
+			},
+		},
+		{
+			name: "PK duplikat template dari dua ciphertext berbeda",
+			url:  "/api/v1/laboratorium/pk/permintaan/Ralan/" + encKunjungan,
+			body: laboratorium.SimpanPermintaanLabPKRequest{
+				PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+					NoRawat:           noRawat,
+					TanggalPermintaan: "2026-04-22",
+					JamPermintaan:     "10:00:00",
+					DiagnosaKlinis:    "Febris",
+				},
+				Pemeriksaan: []laboratorium.ItemPemeriksaanLabPKRequest{
+					{IdTindakan: encTindakanA, IdTemplate: []string{encTmplA, encTmplB}},
+				},
+			},
+		},
+		{
+			name: "PA duplikat tindakan dari dua ciphertext berbeda",
+			url:  "/api/v1/laboratorium/pa/permintaan/Ralan/" + encKunjungan,
+			body: laboratorium.SimpanPermintaanLabPARequest{
+				PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+					NoRawat:           noRawat,
+					TanggalPermintaan: "2026-04-22",
+					JamPermintaan:     "10:00:00",
+					DiagnosaKlinis:    "Tumor",
+				},
+				Pemeriksaan: []laboratorium.ItemPemeriksaanLabPARequest{
+					{IdTindakan: encTindakanA},
+					{IdTindakan: encTindakanB},
+				},
+			},
+		},
+		{
+			name: "MB duplikat template dari dua ciphertext berbeda",
+			url:  "/api/v1/laboratorium/mb/permintaan/Ralan/" + encKunjungan,
+			body: laboratorium.SimpanPermintaanLabMBRequest{
+				PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+					NoRawat:           noRawat,
+					TanggalPermintaan: "2026-04-22",
+					JamPermintaan:     "10:00:00",
+					DiagnosaKlinis:    "Sepsis",
+				},
+				Pemeriksaan: []laboratorium.ItemPemeriksaanLabMBRequest{
+					{IdTindakan: encTindakanA, IdTemplate: []string{encTmplA, encTmplB}},
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := json.Marshal(tc.body)
+			req := httptest.NewRequest(http.MethodPost, tc.url, bytes.NewReader(raw))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 Bad Request, got %d: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}

@@ -307,6 +307,99 @@ func TestDaftarHasilLabMB_BatchHydratesDetailPKWithoutNestedConn(t *testing.T) {
 	}
 }
 
+func TestDaftarHasilLabPKAndPA_BatchHydratesWithoutNestedConn(t *testing.T) {
+	headerCols := []string{
+		"no_rawat", "kode_tindakan", "nama_tindakan", "kategori", "status",
+		"tgl_periksa", "jam_periksa", "kd_dokter_perujuk", "nm_dokter_perujuk",
+		"kd_dokter_pj", "nm_dokter_pj", "nip_petugas", "nama_petugas",
+	}
+	filter := FilterRiwayatLab{Page: 1, Limit: 10}
+
+	t.Run("DaftarHasilLabPK & DaftarHasilLabPKByRM succeed with MaxOpenConns=1 in 1 batch query", func(t *testing.T) {
+		var detailQueryCount int
+		db := newStubLabDB(t, func(query string, _ []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			switch {
+			case strings.Contains(query, "COUNT(*)"):
+				return []string{"total"}, [][]driver.Value{{int64(2)}}, nil
+			case strings.Contains(query, "FROM detail_periksa_lab dpl"):
+				detailQueryCount++
+				return []string{
+					"no_rawat", "kode_tindakan", "tgl_periksa", "jam_periksa",
+					"id_template", "nama_pemeriksaan", "nilai", "satuan", "nilai_rujukan", "keterangan",
+				}, [][]driver.Value{
+					{"2026/09/04/000001", "PK001", "2026-09-04", "08:00:00", int64(11), "Hemoglobin", "13.5", "g/dL", "13-17", "N"},
+				}, nil
+			default:
+				return headerCols, [][]driver.Value{
+					{"2026/09/04/000001", "PK001", "Darah Lengkap", "PK", "Ralan", "2026-09-04", "08:00:00", "D01", "dr. A", "D02", "dr. B", "P01", "Analis"},
+					{"2026/09/04/000002", "PK002", "GDS", "PK", "Ralan", "2026-09-04", "09:00:00", "D01", "dr. A", "D02", "dr. B", "P01", "Analis"},
+				}, nil
+			}
+		})
+		db.SetMaxOpenConns(1)
+		repo := NewRepository(db)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		list, total, err := repo.DaftarHasilLabPK(ctx, "2026/09/04/000001", shared.StatusLanjutRawatJalan, filter)
+		if err != nil {
+			t.Fatalf("DaftarHasilLabPK unexpected error: %v", err)
+		}
+		if total != 2 || len(list) != 2 || detailQueryCount != 1 {
+			t.Fatalf("expected total=2 len=2 detailQueries=1, got total=%d len=%d detailQueries=%d", total, len(list), detailQueryCount)
+		}
+		if len(list[0].DetailPK) != 1 || list[0].DetailPK[0].Nilai != "13.5" {
+			t.Fatalf("unexpected PK detail[0]: %+v", list[0].DetailPK)
+		}
+		if list[1].DetailPK == nil || len(list[1].DetailPK) != 0 {
+			t.Fatalf("expected non-nil empty DetailPK on second item, got %#v", list[1].DetailPK)
+		}
+	})
+
+	t.Run("DaftarHasilLabPA & DaftarHasilLabPAByRM succeed with MaxOpenConns=1 in 1 batch query", func(t *testing.T) {
+		var detailQueryCount int
+		db := newStubLabDB(t, func(query string, _ []driver.NamedValue) ([]string, [][]driver.Value, error) {
+			switch {
+			case strings.Contains(query, "COUNT(*)"):
+				return []string{"total"}, [][]driver.Value{{int64(2)}}, nil
+			case strings.Contains(query, "FROM detail_periksa_labpa dpl"):
+				detailQueryCount++
+				return []string{
+					"no_rawat", "kode_tindakan", "tgl_periksa", "jam_periksa",
+					"diagnosa_klinik", "makroskopis", "mikroskopis", "kesimpulan", "kesan",
+				}, [][]driver.Value{
+					{"2026/09/04/000001", "PA001", "2026-09-04", "10:00:00", "Tumor mammae", "Jaringan padat", "Sel jinak", "Fibroadenoma", "Jinak"},
+				}, nil
+			default:
+				return headerCols, [][]driver.Value{
+					{"2026/09/04/000001", "PA001", "Biopsi PA", "PA", "Ralan", "2026-09-04", "10:00:00", "D01", "dr. A", "D02", "dr. B", "P01", "Analis"},
+					{"2026/09/04/000002", "PA002", "FNAB", "PA", "Ralan", "2026-09-04", "11:00:00", "D01", "dr. A", "D02", "dr. B", "P01", "Analis"},
+				}, nil
+			}
+		})
+		db.SetMaxOpenConns(1)
+		repo := NewRepository(db)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		list, total, err := repo.DaftarHasilLabPA(ctx, "2026/09/04/000001", shared.StatusLanjutRawatJalan, filter)
+		if err != nil {
+			t.Fatalf("DaftarHasilLabPA unexpected error: %v", err)
+		}
+		if total != 2 || len(list) != 2 || detailQueryCount != 1 {
+			t.Fatalf("expected total=2 len=2 detailQueries=1, got total=%d len=%d detailQueries=%d", total, len(list), detailQueryCount)
+		}
+		if list[0].DetailPA == nil || list[0].DetailPA.Kesimpulan != "Fibroadenoma" {
+			t.Fatalf("unexpected PA detail[0]: %+v", list[0].DetailPA)
+		}
+		if list[1].DetailPA == nil || list[1].DetailPA.Kesimpulan != "" {
+			t.Fatalf("expected default empty HasilLabPA struct on second item, got %+v", list[1].DetailPA)
+		}
+	})
+}
+
 func TestDetailHasilLabMB_LoadsDetailPK(t *testing.T) {
 	headerCols := []string{
 		"no_rawat", "kode_tindakan", "nama_tindakan", "kategori", "status",

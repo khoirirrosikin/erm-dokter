@@ -652,3 +652,79 @@ func TestSimpanPermintaanLabMBRequest_ValidationAndSanitization(t *testing.T) {
 		}
 	})
 }
+
+func TestSimpanPermintaanLab_DuplicateTindakanAndTemplate_Validate(t *testing.T) {
+	past := time.Now().Add(-5 * time.Minute)
+	tgl := past.Format("2006-01-02")
+	jam := past.Format("15:04:05")
+
+	t.Run("PK menolak duplikat id_tindakan dan id_template", func(t *testing.T) {
+		req := laboratorium.SimpanPermintaanLabPKRequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+				NoRawat:           "2026/09/03/000001",
+				TanggalPermintaan: tgl,
+				JamPermintaan:     jam,
+				DiagnosaKlinis:    "Febris",
+			},
+			Pemeriksaan: []laboratorium.ItemPemeriksaanLabPKRequest{
+				{IdTindakan: "enc-pk-1", IdTemplate: []string{"enc-t1", "enc-t1"}},
+				{IdTindakan: "enc-pk-1"},
+			},
+		}
+		errs := req.Validate()
+		if errs == nil {
+			t.Fatal("expected validation errors, got nil")
+		}
+		if errs["pemeriksaan[0].id_template[1]"] == "" {
+			t.Errorf("expected duplicate template error on pemeriksaan[0].id_template[1], got %v", errs)
+		}
+		if errs["pemeriksaan[1].id_tindakan"] == "" {
+			t.Errorf("expected duplicate tindakan error on pemeriksaan[1].id_tindakan, got %v", errs)
+		}
+	})
+
+	t.Run("PA menolak duplikat id_tindakan", func(t *testing.T) {
+		req := laboratorium.SimpanPermintaanLabPARequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+				NoRawat:           "2026/09/03/000001",
+				TanggalPermintaan: tgl,
+				JamPermintaan:     jam,
+				DiagnosaKlinis:    "Tumor",
+			},
+			Pemeriksaan: []laboratorium.ItemPemeriksaanLabPARequest{
+				{IdTindakan: "enc-pa-1"},
+				{IdTindakan: "enc-pa-1"},
+			},
+		}
+		req.Sanitize()
+		errs := req.Validate()
+		if errs == nil || errs["pemeriksaan[1].id_tindakan"] == "" {
+			t.Fatalf("expected duplicate tindakan error on pemeriksaan[1].id_tindakan, got %v", errs)
+		}
+	})
+
+	t.Run("MB menolak duplikat id_tindakan dan id_template", func(t *testing.T) {
+		req := laboratorium.SimpanPermintaanLabMBRequest{
+			PermintaanLabHeaderRequest: laboratorium.PermintaanLabHeaderRequest{
+				NoRawat:           "2026/09/03/000001",
+				TanggalPermintaan: tgl,
+				JamPermintaan:     jam,
+				DiagnosaKlinis:    "Sepsis",
+			},
+			Pemeriksaan: []laboratorium.ItemPemeriksaanLabMBRequest{
+				{IdTindakan: "enc-mb-1", IdTemplate: []string{"enc-t1", "enc-t1"}},
+				{IdTindakan: "enc-mb-1"},
+			},
+		}
+		errs := req.Validate()
+		if errs == nil {
+			t.Fatal("expected validation errors, got nil")
+		}
+		if errs["pemeriksaan[0].id_template[1]"] == "" {
+			t.Errorf("expected duplicate template error on pemeriksaan[0].id_template[1], got %v", errs)
+		}
+		if errs["pemeriksaan[1].id_tindakan"] == "" {
+			t.Errorf("expected duplicate tindakan error on pemeriksaan[1].id_tindakan, got %v", errs)
+		}
+	})
+}

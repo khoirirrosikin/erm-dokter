@@ -8,8 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
-
+	"erm-dokter/internal/pkg/database"
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/rawatinap"
 	"erm-dokter/internal/rawatjalan"
@@ -124,7 +123,7 @@ func (s *service) SimpanPemeriksaan(ctx context.Context, kodeDokter string, stat
 	}
 
 	if err := s.repo.SimpanPemeriksaan(ctx, kodeDokter, statusLanjut, req); err != nil {
-		if isDuplicateEntry(err) {
+		if database.IsDuplicateEntry(err) {
 			return nil, apperror.ValidationError{
 				"jam_pemeriksaan": fmt.Sprintf("Pemeriksaan pada %s %s sudah ada", req.TanggalPemeriksaan, req.JamPemeriksaan),
 			}
@@ -169,7 +168,7 @@ func (s *service) UpdatePemeriksaan(ctx context.Context, kodeDokter string, id I
 				fmt.Sprintf("Data pemeriksaan tidak ditemukan untuk no_rawat '%s' tanggal '%s' jam '%s' (%s)", id.NoRawat, id.TanggalPemeriksaan, id.JamPemeriksaan, statusLanjut),
 			)
 		}
-		if isDuplicateEntry(err) {
+		if database.IsDuplicateEntry(err) {
 			return nil, apperror.ValidationError{
 				"jam_pemeriksaan": fmt.Sprintf("Pemeriksaan pada %s %s sudah ada", req.TanggalPemeriksaan, req.JamPemeriksaan),
 			}
@@ -250,8 +249,10 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if tanggalPemeriksaan != "" && jamPemeriksaan != "" {
-		waktuPemeriksaan, err := shared.ParseWaktu(tanggalPemeriksaan, jamPemeriksaan)
+	var waktuPemeriksaan time.Time
+	hasWaktuInput := tanggalPemeriksaan != "" && jamPemeriksaan != ""
+	if hasWaktuInput {
+		waktuPemeriksaan, err = shared.ParseWaktu(tanggalPemeriksaan, jamPemeriksaan)
 		if err != nil {
 			return apperror.NewBusinessError(err.Error())
 		}
@@ -270,9 +271,43 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 	}
 
 	if hasRecordKamar {
-		if !isAktifRanap {
+		if isAktifRanap {
+			return nil
+		}
+
+		tglKeluar, jamKeluar, err := s.rawatInapService.GetWaktuKeluarTerakhir(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil waktu keluar kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if tglKeluar == "" {
 			return apperror.NewBusinessError("Pasien sudah keluar dari kamar inap")
 		}
+
+		jamKeluarNorm := strings.TrimSpace(jamKeluar)
+		if jamKeluarNorm == "" {
+			jamKeluarNorm = "23:59:59"
+		}
+		waktuKeluar, err := shared.ParseWaktu(tglKeluar, jamKeluarNorm)
+		if err != nil {
+			s.log.Error("Gagal parse waktu keluar kamar inap no_rawat '%s' (%s %s): %v", noRawat, tglKeluar, jamKeluarNorm, err)
+			return err
+		}
+
+		batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+		if time.Now().After(batasWaktu) {
+			return apperror.NewForbiddenError(
+				fmt.Sprintf("Pemeriksaan tidak dapat %s, melewati batas %d jam setelah pasien keluar kamar inap", aksi, s.maxEditJam),
+				fmt.Sprintf("Pemeriksaan no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu keluar kamar inap (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+			)
+		}
+
+		if hasWaktuInput && waktuPemeriksaan.After(waktuKeluar) {
+			return apperror.ValidationError{
+				"tanggal_pemeriksaan": fmt.Sprintf("Waktu pemeriksaan (%s %s) tidak boleh melebihi waktu pulang kamar inap (%s %s)", tanggalPemeriksaan, jamPemeriksaan, tglKeluar, jamKeluarNorm),
+			}
+		}
+
 		return nil
 	}
 
@@ -289,14 +324,4 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 	}
 
 	return nil
-}
-
-func isDuplicateEntry(err error) bool {
-	if err == nil {
-		return false
-	}
-	var mysqlErr *mysql.MySQLError
-	return (errors.As(err, &mysqlErr) && mysqlErr.Number == 1062) ||
-		strings.Contains(err.Error(), "1062") ||
-		strings.Contains(err.Error(), "Duplicate entry")
 }

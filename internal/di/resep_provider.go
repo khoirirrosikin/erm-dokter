@@ -20,6 +20,6 @@ func provideResep(
 	obatSvc obat.Service,
 ) *resep.Handler {
 	repo := resep.NewRepository(db)
-	svc := resep.NewService(repo, rawatJalanSvc, rawatInapSvc, obatSvc, cfg.MaxEditRekamMedisJam, log)
+	svc := resep.NewService(repo, rawatJalanSvc, rawatInapSvc, obatSvc, cfg.MaxEditRekamMedisJam, log, cfg.KodePenjaminKunciBayar...)
 	return resep.NewHandler(svc, cfg.EncryptionKey)
 }

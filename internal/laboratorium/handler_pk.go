@@ -63,6 +63,7 @@ func (h *Handler) SimpanPermintaanLabPK(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoPermintaan, data.NoPermintaan)
 		h.encryptDetailPermintaanLabPK(data, idKunjungan)
 	}
 
@@ -153,6 +154,7 @@ func (h *Handler) DetailPermintaanLabPK(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoRawat, data.NoRawat)
 		h.encryptDetailPermintaanLabPK(data, "")
 	}
 
@@ -215,6 +217,7 @@ func (h *Handler) UpdatePermintaanLabPK(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoPermintaan, data.NoPermintaan)
 		h.encryptDetailPermintaanLabPK(data, idKunjungan)
 	}
 
@@ -258,6 +261,7 @@ func (h *Handler) HapusPermintaanLabPK(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) decryptTindakanLabPayload(req *SimpanPermintaanLabPKRequest) error {
 	valErrs := make(apperror.ValidationError)
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 
 	for i := range req.Pemeriksaan {
 		kodeTindakan, err := crypto.Decrypt(req.Pemeriksaan[i].IdTindakan, h.encryptionKey)
@@ -265,8 +269,14 @@ func (h *Handler) decryptTindakanLabPayload(req *SimpanPermintaanLabPKRequest) e
 			valErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = "ID tindakan tidak valid"
 			continue
 		}
+		if seenTindakan[kodeTindakan] {
+			valErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan laboratorium tidak boleh duplikat", i+1)
+			continue
+		}
+		seenTindakan[kodeTindakan] = true
 		req.Pemeriksaan[i].KodeTindakan = kodeTindakan
 
+		seenTemplate := make(map[int]bool, len(req.Pemeriksaan[i].IdTemplate))
 		for j, encIdTemplate := range req.Pemeriksaan[i].IdTemplate {
 			idTemplateStr, err := crypto.Decrypt(encIdTemplate, h.encryptionKey)
 			if err != nil {
@@ -278,6 +288,11 @@ func (h *Handler) decryptTindakanLabPayload(req *SimpanPermintaanLabPKRequest) e
 				valErrs[fmt.Sprintf("pemeriksaan[%d].id_template[%d]", i, j)] = "Format ID template tidak valid"
 				continue
 			}
+			if seenTemplate[idTemplateInt] {
+				valErrs[fmt.Sprintf("pemeriksaan[%d].id_template[%d]", i, j)] = fmt.Sprintf("Pemeriksaan ke-%d parameter ke-%d: Template pengujian tidak boleh duplikat", i+1, j+1)
+				continue
+			}
+			seenTemplate[idTemplateInt] = true
 			req.Pemeriksaan[i].KodeTemplate = append(req.Pemeriksaan[i].KodeTemplate, idTemplateInt)
 		}
 	}

@@ -30,12 +30,13 @@ type Service interface {
 }
 
 type service struct {
-	repo              Repository
-	rawatJalanService rawatjalan.Service
-	rawatInapService  rawatinap.Service
-	tindakanService   tindakan.Service
-	maxEditJam        int
-	log               *logger.Logger
+	repo                   Repository
+	rawatJalanService      rawatjalan.Service
+	rawatInapService       rawatinap.Service
+	tindakanService        tindakan.Service
+	maxEditJam             int
+	kodePenjaminKunciBayar []string
+	log                    *logger.Logger
 }
 
 func NewService(
@@ -45,17 +46,19 @@ func NewService(
 	tindakanService tindakan.Service,
 	maxEditJam int,
 	log *logger.Logger,
+	kodePenjaminKunciBayar ...string,
 ) Service {
 	if maxEditJam <= 0 {
 		maxEditJam = 48
 	}
 	return &service{
-		repo:              repo,
-		rawatJalanService: rawatJalanService,
-		rawatInapService:  rawatInapService,
-		tindakanService:   tindakanService,
-		maxEditJam:        maxEditJam,
-		log:               log,
+		repo:                   repo,
+		rawatJalanService:      rawatJalanService,
+		rawatInapService:       rawatInapService,
+		tindakanService:        tindakanService,
+		maxEditJam:             maxEditJam,
+		kodePenjaminKunciBayar: shared.NormalizeKodePenjaminKunciBayar(kodePenjaminKunciBayar),
+		log:                    log,
 	}
 }
 
@@ -162,11 +165,20 @@ func (s *service) UpdatePermintaanRadiologi(ctx context.Context, kodeDokter, noR
 		return nil, err
 	}
 
-	if err := s.validasiAksesDanStatusPermintaan(detail, noRawat, kodeDokter, "diubah"); err != nil {
+	if err := s.validasiAksesDanStatusPermintaan(detail, noRawat, kodeDokter, statusLanjut, "diubah"); err != nil {
 		return nil, err
 	}
 
-	if err := s.validasiRegistrasiDanStatus(ctx, noRawat, req.TanggalPermintaan, req.JamPermintaan, statusLanjut, "diubah"); err != nil {
+	orderStatus := statusLanjut
+	if orderStatus == "" {
+		if strings.EqualFold(detail.Status, string(shared.StatusLanjutRawatInap)) {
+			orderStatus = shared.StatusLanjutRawatInap
+		} else {
+			orderStatus = shared.StatusLanjutRawatJalan
+		}
+	}
+
+	if err := s.validasiRegistrasiDanStatus(ctx, noRawat, req.TanggalPermintaan, req.JamPermintaan, orderStatus, "diubah"); err != nil {
 		return nil, err
 	}
 
@@ -182,7 +194,7 @@ func (s *service) UpdatePermintaanRadiologi(ctx context.Context, kodeDokter, noR
 				fmt.Sprintf("Data permintaan radiologi no_permintaan '%s' tidak ditemukan di database", noPermintaan),
 			)
 		}
-		s.log.Error("Gagal memperbarui permintaan radiologi no_permintaan '%s' untuk no_rawat '%s' (%s) oleh dokter '%s': %v", noPermintaan, noRawat, statusLanjut, kodeDokter, err)
+		s.log.Error("Gagal memperbarui permintaan radiologi no_permintaan '%s' untuk no_rawat '%s' (%s) oleh dokter '%s': %v", noPermintaan, noRawat, orderStatus, kodeDokter, err)
 		return nil, err
 	}
 
@@ -191,7 +203,7 @@ func (s *service) UpdatePermintaanRadiologi(ctx context.Context, kodeDokter, noR
 		return nil, err
 	}
 
-	s.log.Info("Berhasil memperbarui permintaan radiologi no_permintaan '%s' untuk no_rawat '%s' (%s %s, %s) oleh dokter '%s'", noPermintaan, noRawat, req.TanggalPermintaan, req.JamPermintaan, statusLanjut, kodeDokter)
+	s.log.Info("Berhasil memperbarui permintaan radiologi no_permintaan '%s' untuk no_rawat '%s' (%s %s, %s) oleh dokter '%s'", noPermintaan, noRawat, req.TanggalPermintaan, req.JamPermintaan, orderStatus, kodeDokter)
 	return updatedDetail, nil
 }
 
@@ -201,7 +213,7 @@ func (s *service) HapusPermintaanRadiologi(ctx context.Context, kodeDokter, noRa
 		return err
 	}
 
-	if err := s.validasiAksesDanStatusPermintaan(detail, noRawat, kodeDokter, "dihapus"); err != nil {
+	if err := s.validasiAksesDanStatusPermintaan(detail, noRawat, kodeDokter, statusLanjut, "dihapus"); err != nil {
 		return err
 	}
 
@@ -233,11 +245,18 @@ func (s *service) HapusPermintaanRadiologi(ctx context.Context, kodeDokter, noRa
 	return nil
 }
 
-func (s *service) validasiAksesDanStatusPermintaan(detail *DetailPermintaanRadiologi, noRawat, kodeDokter, action string) error {
+func (s *service) validasiAksesDanStatusPermintaan(detail *DetailPermintaanRadiologi, noRawat, kodeDokter string, statusLanjut shared.StatusLanjut, action string) error {
 	if detail.NoRawat != noRawat {
 		return apperror.NewNotFoundError(
 			"Permintaan radiologi tidak ditemukan",
 			fmt.Sprintf("Data permintaan radiologi no_permintaan '%s' tidak ditemukan untuk no_rawat '%s'", detail.NoPermintaan, noRawat),
+		)
+	}
+
+	if statusLanjut != "" && statusLanjut != shared.StatusLanjutSemua && !strings.EqualFold(strings.TrimSpace(detail.Status), string(statusLanjut)) {
+		return apperror.NewNotFoundError(
+			"Permintaan radiologi tidak ditemukan",
+			fmt.Sprintf("Data permintaan radiologi no_permintaan '%s' berstatus '%s', tidak sesuai dengan status '%s'", detail.NoPermintaan, detail.Status, statusLanjut),
 		)
 	}
 
@@ -246,8 +265,10 @@ func (s *service) validasiAksesDanStatusPermintaan(detail *DetailPermintaanRadio
 		return apperror.NewForbiddenError(fmt.Sprintf("Permintaan radiologi dokter lain tidak dapat %s", action))
 	}
 
-	if detail.TanggalSampel != "0000-00-00" || detail.TanggalHasil != "0000-00-00" {
-		s.log.Warn("Percobaan %s permintaan radiologi no_order %s ditolak: sudah diproses petugas (sampel: %s, hasil: %s)", action, detail.NoPermintaan, detail.TanggalSampel, detail.TanggalHasil)
+	isSampelDiambil := shared.IsNonZeroDate(detail.TanggalSampel) || shared.IsNonZeroTime(detail.JamSampel)
+	isHasilKeluar := shared.IsNonZeroDate(detail.TanggalHasil) || shared.IsNonZeroTime(detail.JamHasil)
+	if isSampelDiambil || isHasilKeluar {
+		s.log.Warn("Percobaan %s permintaan radiologi no_order %s ditolak: sudah diproses petugas (sampel: %s %s, hasil: %s %s)", action, detail.NoPermintaan, detail.TanggalSampel, detail.JamSampel, detail.TanggalHasil, detail.JamHasil)
 		return apperror.NewForbiddenError(fmt.Sprintf("Permintaan radiologi sudah diproses oleh petugas, tidak dapat %s", action))
 	}
 
@@ -262,9 +283,21 @@ func (s *service) validasiAksesDanStatusPermintaan(detail *DetailPermintaanRadio
 }
 
 func (s *service) validasiTindakanRadiologi(ctx context.Context, req SimpanPermintaanRadiologiRequest) ([]string, error) {
+	dupErrs := make(apperror.ValidationError)
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 	var kodeTindakanList []string
-	for _, item := range req.Pemeriksaan {
+	for i, item := range req.Pemeriksaan {
+		if item.KodeTindakan != "" {
+			if seenTindakan[item.KodeTindakan] {
+				dupErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan radiologi tidak boleh duplikat", i+1)
+				continue
+			}
+			seenTindakan[item.KodeTindakan] = true
+		}
 		kodeTindakanList = append(kodeTindakanList, item.KodeTindakan)
+	}
+	if len(dupErrs) > 0 {
+		return nil, dupErrs
 	}
 
 	if len(kodeTindakanList) == 0 {
@@ -299,8 +332,8 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if infoRegistrasi.StatusBayar == "Sudah Bayar" && infoRegistrasi.KodePenjamin == "BPJ" {
-		return apperror.NewBusinessError(fmt.Sprintf("Pasien BPJS sudah bayar, permintaan radiologi tidak dapat %s", aksi))
+	if shared.IsPenjaminTerkunciSudahBayar(infoRegistrasi.StatusBayar, infoRegistrasi.KodePenjamin, s.kodePenjaminKunciBayar) {
+		return apperror.NewBusinessError(shared.PesanTerkunciSudahBayar(infoRegistrasi.KodePenjamin, "permintaan radiologi", aksi))
 	}
 
 	tanggalRegistrasi := infoRegistrasi.TanggalRegistrasi
@@ -312,8 +345,10 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if tanggalPermintaan != "" && jamPermintaan != "" {
-		waktuPermintaan, err := shared.ParseWaktu(tanggalPermintaan, jamPermintaan)
+	var waktuPermintaan time.Time
+	hasWaktuInput := tanggalPermintaan != "" && jamPermintaan != ""
+	if hasWaktuInput {
+		waktuPermintaan, err = shared.ParseWaktu(tanggalPermintaan, jamPermintaan)
 		if err != nil {
 			return apperror.NewBusinessError(err.Error())
 		}
@@ -325,21 +360,53 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		}
 	}
 
-	isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
-	if err != nil {
-		s.log.Error("Gagal cek status kamar inap untuk no_rawat '%s': %v", noRawat, err)
-		return err
-	}
+	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
+		isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal cek status kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if !hasRecordKamar {
+			return apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		}
+		if isAktifRanap {
+			return nil
+		}
 
-	if hasRecordKamar {
-		if !isAktifRanap {
+		tglKeluar, jamKeluar, err := s.rawatInapService.GetWaktuKeluarTerakhir(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil waktu keluar kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if tglKeluar == "" {
 			return apperror.NewBusinessError("Pasien sudah keluar dari kamar inap")
 		}
-		return nil
-	}
 
-	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
-		return apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		jamKeluarNorm := strings.TrimSpace(jamKeluar)
+		if jamKeluarNorm == "" {
+			jamKeluarNorm = "23:59:59"
+		}
+		waktuKeluar, err := shared.ParseWaktu(tglKeluar, jamKeluarNorm)
+		if err != nil {
+			s.log.Error("Gagal parse waktu keluar kamar inap no_rawat '%s' (%s %s): %v", noRawat, tglKeluar, jamKeluarNorm, err)
+			return err
+		}
+
+		batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+		if time.Now().After(batasWaktu) {
+			return apperror.NewForbiddenError(
+				fmt.Sprintf("Permintaan radiologi tidak dapat %s, melewati batas %d jam setelah pasien keluar kamar inap", aksi, s.maxEditJam),
+				fmt.Sprintf("Permintaan radiologi no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu keluar kamar inap (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+			)
+		}
+
+		if hasWaktuInput && waktuPermintaan.After(waktuKeluar) {
+			return apperror.ValidationError{
+				"tanggal_permintaan": fmt.Sprintf("Waktu permintaan radiologi (%s %s) tidak boleh melebihi waktu pulang kamar inap (%s %s)", tanggalPermintaan, jamPermintaan, tglKeluar, jamKeluarNorm),
+			}
+		}
+
+		return nil
 	}
 
 	batasWaktu := waktuRegistrasi.Add(time.Duration(s.maxEditJam) * time.Hour)

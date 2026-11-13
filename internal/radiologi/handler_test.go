@@ -690,3 +690,33 @@ func TestHandler_DetailPermintaanRadiologi(t *testing.T) {
 		}
 	})
 }
+
+func TestHandler_SimpanPermintaanRadiologi_DuplicateDecryptedTindakan(t *testing.T) {
+	noRawat := "2026/09/05/000001"
+	encKunjungan, _ := crypto.Encrypt(noRawat, testEncryptionKey)
+	encTindakanA, _ := crypto.Encrypt("RAD001", testEncryptionKey)
+	encTindakanB, _ := crypto.Encrypt("RAD001", testEncryptionKey)
+	if encTindakanA == encTindakanB {
+		t.Fatal("expected distinct AES-GCM ciphertexts")
+	}
+
+	router := setupRadiologiRouterWithAuth(&mockRadiologiService{})
+	body, _ := json.Marshal(radiologi.SimpanPermintaanRadiologiRequest{
+		NoRawat:           noRawat,
+		TanggalPermintaan: "2026-09-05",
+		JamPermintaan:     "10:00:00",
+		DiagnosaKlinis:    "Susp Pneumonia",
+		Pemeriksaan: []radiologi.ItemPemeriksaanRadiologiRequest{
+			{IdTindakan: encTindakanA},
+			{IdTindakan: encTindakanB},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/radiologi/permintaan/Ralan/"+encKunjungan, strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for duplicate decrypted tindakan, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

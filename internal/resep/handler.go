@@ -162,6 +162,10 @@ func (h *Handler) DetailResep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if resep != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoRawat, resep.NoRawat)
+	}
+
 	listResep := []Resep{*resep}
 	h.encryptResepResponse(listResep, "")
 	*resep = listResep[0]
@@ -221,6 +225,7 @@ func (h *Handler) SimpanResep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resep != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoResep, resep.NoResep)
 		listResep := []Resep{*resep}
 		h.encryptResepResponse(listResep, idKunjungan)
 		*resep = listResep[0]
@@ -287,6 +292,7 @@ func (h *Handler) UpdateResep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resep != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoResep, resep.NoResep)
 		listResep := []Resep{*resep}
 		h.encryptResepResponse(listResep, idKunjungan)
 		*resep = listResep[0]
@@ -335,22 +341,34 @@ func (h *Handler) HapusResep(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) decryptObatPayload(req *SimpanResepRequest) error {
 	valErrs := make(apperror.ValidationError)
 
+	seenDokter := make(map[string]bool, len(req.ResepDokter))
 	for i := range req.ResepDokter {
 		kodeObat, err := crypto.Decrypt(req.ResepDokter[i].IdObat, h.encryptionKey)
 		if err != nil {
 			valErrs[fmt.Sprintf("resep_dokter[%d].id_obat", i)] = "ID obat tidak valid"
 			continue
 		}
+		if seenDokter[kodeObat] {
+			valErrs[fmt.Sprintf("resep_dokter[%d].id_obat", i)] = fmt.Sprintf("Obat ke-%d: Obat tidak boleh duplikat dalam daftar non-racikan", i+1)
+			continue
+		}
+		seenDokter[kodeObat] = true
 		req.ResepDokter[i].KodeObat = kodeObat
 	}
 
 	for i := range req.ResepRacikan {
+		seenDetail := make(map[string]bool, len(req.ResepRacikan[i].Detail))
 		for j := range req.ResepRacikan[i].Detail {
 			kodeObat, err := crypto.Decrypt(req.ResepRacikan[i].Detail[j].IdObat, h.encryptionKey)
 			if err != nil {
 				valErrs[fmt.Sprintf("resep_racikan[%d].detail[%d].id_obat", i, j)] = "ID obat tidak valid"
 				continue
 			}
+			if seenDetail[kodeObat] {
+				valErrs[fmt.Sprintf("resep_racikan[%d].detail[%d].id_obat", i, j)] = fmt.Sprintf("Racikan ke-%d bahan ke-%d: Bahan obat tidak boleh duplikat dalam satu racikan", i+1, j+1)
+				continue
+			}
+			seenDetail[kodeObat] = true
 			req.ResepRacikan[i].Detail[j].KodeObat = kodeObat
 		}
 	}

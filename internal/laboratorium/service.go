@@ -45,17 +45,18 @@ type Service interface {
 }
 
 type service struct {
-	repo              Repository
-	berkasSvc         berkasdigital.Service
-	rawatJalanService rawatjalan.Service
-	rawatInapService  rawatinap.Service
-	tindakanService   tindakan.Service
-	maxEditJam        int
-	urlBerkasDigital  string
-	kodeBerkasPK      []string
-	kodeBerkasPA      []string
-	kodeBerkasMB      []string
-	log               *logger.Logger
+	repo                   Repository
+	berkasSvc              berkasdigital.Service
+	rawatJalanService      rawatjalan.Service
+	rawatInapService       rawatinap.Service
+	tindakanService        tindakan.Service
+	maxEditJam             int
+	kodePenjaminKunciBayar []string
+	urlBerkasDigital       string
+	kodeBerkasPK           []string
+	kodeBerkasPA           []string
+	kodeBerkasMB           []string
+	log                    *logger.Logger
 }
 
 func NewService(
@@ -68,6 +69,7 @@ func NewService(
 	urlBerkasDigital string,
 	kodeBerkasPK, kodeBerkasPA, kodeBerkasMB []string,
 	log *logger.Logger,
+	kodePenjaminKunciBayar ...string,
 ) Service {
 	if maxEditJam <= 0 {
 		maxEditJam = 48
@@ -77,17 +79,18 @@ func NewService(
 		baseURL = strings.TrimRight(urlBerkasDigital, "/") + "/"
 	}
 	return &service{
-		repo:              repo,
-		berkasSvc:         berkasSvc,
-		rawatJalanService: rawatJalanService,
-		rawatInapService:  rawatInapService,
-		tindakanService:   tindakanService,
-		maxEditJam:        maxEditJam,
-		urlBerkasDigital:  baseURL,
-		kodeBerkasPK:      kodeBerkasPK,
-		kodeBerkasPA:      kodeBerkasPA,
-		kodeBerkasMB:      kodeBerkasMB,
-		log:               log,
+		repo:                   repo,
+		berkasSvc:              berkasSvc,
+		rawatJalanService:      rawatJalanService,
+		rawatInapService:       rawatInapService,
+		tindakanService:        tindakanService,
+		maxEditJam:             maxEditJam,
+		kodePenjaminKunciBayar: shared.NormalizeKodePenjaminKunciBayar(kodePenjaminKunciBayar),
+		urlBerkasDigital:       baseURL,
+		kodeBerkasPK:           kodeBerkasPK,
+		kodeBerkasPA:           kodeBerkasPA,
+		kodeBerkasMB:           kodeBerkasMB,
+		log:                    log,
 	}
 }
 
@@ -216,11 +219,11 @@ func (s *service) validasiAksesDanStatusPermintaanLab(header PermintaanLabHeader
 		return apperror.NewForbiddenError(fmt.Sprintf("Permintaan laboratorium dokter lain tidak dapat %s", aksi))
 	}
 
-	isSampelDiambil := header.TanggalSampel != "0000-00-00" && header.TanggalSampel != ""
-	isHasilKeluar := header.TanggalHasil != "0000-00-00" && header.TanggalHasil != ""
+	isSampelDiambil := shared.IsNonZeroDate(header.TanggalSampel) || shared.IsNonZeroTime(header.JamSampel)
+	isHasilKeluar := shared.IsNonZeroDate(header.TanggalHasil) || shared.IsNonZeroTime(header.JamHasil)
 
 	if isSampelDiambil || isHasilKeluar {
-		s.log.Warn("Percobaan %s permintaan laboratorium %s ditolak: sudah diproses petugas (sampel: %s, hasil: %s)", aksi, header.NoPermintaan, header.TanggalSampel, header.TanggalHasil)
+		s.log.Warn("Percobaan %s permintaan laboratorium %s ditolak: sudah diproses petugas (sampel: %s %s, hasil: %s %s)", aksi, header.NoPermintaan, header.TanggalSampel, header.JamSampel, header.TanggalHasil, header.JamHasil)
 		return apperror.NewForbiddenError(fmt.Sprintf("Permintaan laboratorium sudah diproses oleh petugas, tidak dapat %s", aksi))
 	}
 
@@ -279,8 +282,8 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if infoRegistrasi.StatusBayar == "Sudah Bayar" && infoRegistrasi.KodePenjamin == "BPJ" {
-		return apperror.NewBusinessError(fmt.Sprintf("Pasien BPJS sudah bayar, permintaan laboratorium tidak dapat %s", aksi))
+	if shared.IsPenjaminTerkunciSudahBayar(infoRegistrasi.StatusBayar, infoRegistrasi.KodePenjamin, s.kodePenjaminKunciBayar) {
+		return apperror.NewBusinessError(shared.PesanTerkunciSudahBayar(infoRegistrasi.KodePenjamin, "permintaan laboratorium", aksi))
 	}
 
 	tanggalRegistrasi := infoRegistrasi.TanggalRegistrasi
@@ -292,8 +295,10 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		return err
 	}
 
-	if tanggalPermintaan != "" && jamPermintaan != "" {
-		waktuPermintaan, err := shared.ParseWaktu(tanggalPermintaan, jamPermintaan)
+	var waktuPermintaan time.Time
+	hasWaktuInput := tanggalPermintaan != "" && jamPermintaan != ""
+	if hasWaktuInput {
+		waktuPermintaan, err = shared.ParseWaktu(tanggalPermintaan, jamPermintaan)
 		if err != nil {
 			return apperror.NewBusinessError(err.Error())
 		}
@@ -305,21 +310,53 @@ func (s *service) validasiRegistrasiDanStatus(ctx context.Context, noRawat, tang
 		}
 	}
 
-	isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
-	if err != nil {
-		s.log.Error("Gagal cek status kamar inap untuk no_rawat '%s': %v", noRawat, err)
-		return err
-	}
+	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
+		isAktifRanap, hasRecordKamar, err := s.rawatInapService.CekStatusKamarInap(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal cek status kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if !hasRecordKamar {
+			return apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		}
+		if isAktifRanap {
+			return nil
+		}
 
-	if hasRecordKamar {
-		if !isAktifRanap {
+		tglKeluar, jamKeluar, err := s.rawatInapService.GetWaktuKeluarTerakhir(ctx, noRawat)
+		if err != nil {
+			s.log.Error("Gagal mengambil waktu keluar kamar inap untuk no_rawat '%s': %v", noRawat, err)
+			return err
+		}
+		if tglKeluar == "" {
 			return apperror.NewBusinessError("Pasien sudah keluar dari kamar inap")
 		}
-		return nil
-	}
 
-	if strings.EqualFold(string(statusLanjut), string(shared.StatusLanjutRawatInap)) {
-		return apperror.NewBusinessError("Pasien belum terdaftar di kamar inap, gunakan status 'ralan'")
+		jamKeluarNorm := strings.TrimSpace(jamKeluar)
+		if jamKeluarNorm == "" {
+			jamKeluarNorm = "23:59:59"
+		}
+		waktuKeluar, err := shared.ParseWaktu(tglKeluar, jamKeluarNorm)
+		if err != nil {
+			s.log.Error("Gagal parse waktu keluar kamar inap no_rawat '%s' (%s %s): %v", noRawat, tglKeluar, jamKeluarNorm, err)
+			return err
+		}
+
+		batasWaktu := waktuKeluar.Add(time.Duration(s.maxEditJam) * time.Hour)
+		if time.Now().After(batasWaktu) {
+			return apperror.NewForbiddenError(
+				fmt.Sprintf("Permintaan laboratorium tidak dapat %s, melewati batas %d jam setelah pasien keluar kamar inap", aksi, s.maxEditJam),
+				fmt.Sprintf("Permintaan laboratorium no_rawat '%s' ditolak untuk %s karena melewati batas %d jam dari waktu keluar kamar inap (%s)", noRawat, aksi, s.maxEditJam, waktuKeluar.Format("2006-01-02 15:04:05")),
+			)
+		}
+
+		if hasWaktuInput && waktuPermintaan.After(waktuKeluar) {
+			return apperror.ValidationError{
+				"tanggal_permintaan": fmt.Sprintf("Waktu permintaan laboratorium (%s %s) tidak boleh melebihi waktu pulang kamar inap (%s %s)", tanggalPermintaan, jamPermintaan, tglKeluar, jamKeluarNorm),
+			}
+		}
+
+		return nil
 	}
 
 	batasWaktu := waktuRegistrasi.Add(time.Duration(s.maxEditJam) * time.Hour)

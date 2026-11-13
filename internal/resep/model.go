@@ -208,10 +208,18 @@ func (r *SimpanResepRequest) Validate() apperror.ValidationError {
 		errs["resep"] = "Resep obat harus memiliki minimal 1 obat non-racikan atau obat racikan"
 	}
 
+	seenObatDokter := make(map[string]bool, len(r.ResepDokter))
 	for i, rd := range r.ResepDokter {
 		prefix := fmt.Sprintf("resep_dokter[%d]", i)
 		label := fmt.Sprintf("Obat ke-%d", i+1)
 		rd.ItemObatInput.Validate(prefix, label, errs)
+		if rd.IdObat != "" {
+			if seenObatDokter[rd.IdObat] {
+				errs[prefix+".id_obat"] = fmt.Sprintf("%s: Obat tidak boleh duplikat dalam daftar non-racikan", label)
+			} else {
+				seenObatDokter[rd.IdObat] = true
+			}
+		}
 		if rd.AturanPakai == "" {
 			errs[prefix+".aturan_pakai"] = fmt.Sprintf("%s: Aturan pakai wajib diisi", label)
 		}
@@ -236,10 +244,18 @@ func (r *SimpanResepRequest) Validate() apperror.ValidationError {
 			continue
 		}
 
+		seenBahanRacikan := make(map[string]bool, len(rr.Detail))
 		for j, d := range rr.Detail {
 			detailPrefix := fmt.Sprintf("%s.detail[%d]", prefix, j)
 			detailLabel := fmt.Sprintf("Racikan ke-%d bahan ke-%d", i+1, j+1)
 			d.ItemObatInput.Validate(detailPrefix, detailLabel, errs)
+			if d.IdObat != "" {
+				if seenBahanRacikan[d.IdObat] {
+					errs[detailPrefix+".id_obat"] = fmt.Sprintf("%s: Bahan obat tidak boleh duplikat dalam satu racikan", detailLabel)
+				} else {
+					seenBahanRacikan[d.IdObat] = true
+				}
+			}
 		}
 
 	}

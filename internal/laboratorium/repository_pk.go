@@ -98,7 +98,7 @@ func (r *repository) queryRiwayatLabPK(ctx context.Context, whereClause string, 
 	}
 	defer rows.Close()
 
-	var list []HasilLaboratorium
+	list := make([]HasilLaboratorium, 0)
 	for rows.Next() {
 		var item HasilLaboratorium
 		err = rows.Scan(
@@ -120,16 +120,18 @@ func (r *repository) queryRiwayatLabPK(ctx context.Context, whereClause string, 
 			return nil, 0, err
 		}
 
-		detailPK, errPK := r.fetchDetailPK(ctx, item.NoRawat, item.KodeTindakan, item.TanggalPeriksa, item.JamPeriksa)
-		if errPK != nil {
-			return nil, 0, errPK
-		}
-		item.DetailPK = detailPK
-
+		item.DetailPK = make([]ItemHasilLabPK, 0)
 		list = append(list, item)
 	}
 
 	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	if err = r.hydrateDetailPKList(ctx, list); err != nil {
 		return nil, 0, err
 	}
 

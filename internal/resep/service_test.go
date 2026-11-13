@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -152,7 +151,8 @@ func (m *mockObatService) CekKeberadaanObat(ctx context.Context, listKodeObat []
 
 type mockRawatInapService struct {
 	rawatinap.Service
-	cekStatusKamarInapFunc func(ctx context.Context, noRawat string) (bool, bool, error)
+	cekStatusKamarInapFunc     func(ctx context.Context, noRawat string) (bool, bool, error)
+	getWaktuKeluarTerakhirFunc func(ctx context.Context, noRawat string) (string, string, error)
 }
 
 func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
@@ -160,6 +160,13 @@ func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat s
 		return m.cekStatusKamarInapFunc(ctx, noRawat)
 	}
 	return false, false, nil
+}
+
+func (m *mockRawatInapService) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	if m.getWaktuKeluarTerakhirFunc != nil {
+		return m.getWaktuKeluarTerakhirFunc(ctx, noRawat)
+	}
+	return "", "", nil
 }
 
 func TestFilterDaftarResep_Validate(t *testing.T) {
@@ -610,15 +617,17 @@ func TestSimpanResep_PasienBPJSSudahBayar(t *testing.T) {
 }
 
 func TestSimpanResep_StatusKamarInap(t *testing.T) {
-	today := time.Now().Format("2006-01-02")
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	regTime := now.Add(-2 * time.Hour)
 	mockRJ := &mockRawatJalanService{
 		getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
-			return today, "08:00:00", true, nil
+			return regTime.Format("2006-01-02"), regTime.Format("15:04:05"), true, nil
 		},
 	}
 	log := logger.New()
 
-	t.Run("Pasien aktif ranap tetap bisa buat resep ralan", func(t *testing.T) {
+	t.Run("Pasien aktif ranap tetap bisa buat resep ralan selama <= 48 jam dari registrasi", func(t *testing.T) {
 		mockRepo := &mockRepository{
 			simpanResepFunc: func(ctx context.Context, kodeDokter string, statusLanjut shared.StatusLanjut, req resep.SimpanResepRequest) (*resep.Resep, error) {
 				return &resep.Resep{NoResep: "202608280099"}, nil
@@ -629,62 +638,136 @@ func TestSimpanResep_StatusKamarInap(t *testing.T) {
 				return true, true, nil
 			},
 		}
-		mockObat := &mockObatService{}
-		svc := resep.NewService(mockRepo, mockRJ, mockRI, mockObat, 48, log)
+		svc := resep.NewService(mockRepo, mockRJ, mockRI, &mockObatService{}, 48, log)
 		req := resep.SimpanResepRequest{
 			NoRawat:          "2026/08/28/000001",
-			TanggalPeresepan: today,
-			JamPeresepan:     "09:00:00",
+			TanggalPeresepan: now.Format("2006-01-02"),
+			JamPeresepan:     now.Format("15:04:05"),
 		}
 		res, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatJalan, req)
 		if err != nil {
-			t.Fatalf("expected success for ralan prescription when patient is active in ranap, got: %v", err)
+			t.Fatalf("expected success for ralan prescription <= 48h, got: %v", err)
 		}
 		if res.NoResep != "202608280099" {
 			t.Errorf("expected no_resep 202608280099, got %s", res.NoResep)
 		}
 	})
 
-	t.Run("Pasien checkout ranap tidak bisa buat resep ralan", func(t *testing.T) {
-		mockRepo := &mockRepository{}
-		mockRI := &mockRawatInapService{
-			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
-				return false, true, nil
+	t.Run("Pasien aktif ranap ditolak buat resep ralan jika registrasi > 48 jam", func(t *testing.T) {
+		oldReg := now.Add(-50 * time.Hour)
+		oldRJ := &mockRawatJalanService{
+			getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+				return oldReg.Format("2006-01-02"), oldReg.Format("15:04:05"), true, nil
 			},
 		}
-		mockObat := &mockObatService{}
-		svc := resep.NewService(mockRepo, mockRJ, mockRI, mockObat, 48, log)
+		mockRI := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return true, true, nil
+			},
+		}
+		svc := resep.NewService(&mockRepository{}, oldRJ, mockRI, &mockObatService{}, 48, log)
 		req := resep.SimpanResepRequest{
 			NoRawat:          "2026/08/28/000001",
-			TanggalPeresepan: today,
-			JamPeresepan:     "09:00:00",
+			TanggalPeresepan: now.Format("2006-01-02"),
+			JamPeresepan:     now.Format("15:04:05"),
 		}
 		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatJalan, req)
-		if err == nil {
-			t.Fatal("expected error patient checked out ranap for ralan prescription, got nil")
-		}
-		if !strings.Contains(err.Error(), "sudah keluar dari kamar inap") {
-			t.Errorf("expected error to mention checkout, got: %v", err)
+		var fErr *apperror.ForbiddenError
+		if !errors.As(err, &fErr) {
+			t.Fatalf("expected ForbiddenError for ralan > 48h even when active in ranap, got: %v", err)
 		}
 	})
 
-	t.Run("Pasien checkout ranap tidak bisa buat resep ranap", func(t *testing.T) {
-		mockRepo := &mockRepository{}
+	t.Run("Pasien checkout ranap <= 48 jam bisa buat resep ranap selama waktu_peresepan <= waktu_keluar", func(t *testing.T) {
+		oldReg := now.Add(-5 * 24 * time.Hour)
+		checkout := now.Add(-12 * time.Hour)
+		inputTime := checkout.Add(-1 * time.Hour)
+		oldRJ := &mockRawatJalanService{
+			getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+				return oldReg.Format("2006-01-02"), oldReg.Format("15:04:05"), true, nil
+			},
+		}
+		mockRepo := &mockRepository{
+			simpanResepFunc: func(ctx context.Context, kodeDokter string, statusLanjut shared.StatusLanjut, req resep.SimpanResepRequest) (*resep.Resep, error) {
+				return &resep.Resep{NoResep: "202608280100"}, nil
+			},
+		}
 		mockRI := &mockRawatInapService{
 			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
 				return false, true, nil
 			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
 		}
-		mockObat := &mockObatService{}
-		svc := resep.NewService(mockRepo, mockRJ, mockRI, mockObat, 48, log)
+		svc := resep.NewService(mockRepo, oldRJ, mockRI, &mockObatService{}, 48, log)
 		req := resep.SimpanResepRequest{
 			NoRawat:          "2026/08/28/000001",
-			TanggalPeresepan: today,
-			JamPeresepan:     "09:00:00",
+			TanggalPeresepan: inputTime.Format("2006-01-02"),
+			JamPeresepan:     inputTime.Format("15:04:05"),
+		}
+		if _, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatInap, req); err != nil {
+			t.Fatalf("expected allowed post-checkout <= 48h with input <= checkout, got %v", err)
+		}
+	})
+
+	t.Run("Pasien checkout ranap <= 48 jam ditolak jika waktu_peresepan > waktu_keluar", func(t *testing.T) {
+		oldReg := now.Add(-5 * 24 * time.Hour)
+		checkout := now.Add(-12 * time.Hour)
+		inputAfterCheckout := checkout.Add(1 * time.Hour)
+		oldRJ := &mockRawatJalanService{
+			getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+				return oldReg.Format("2006-01-02"), oldReg.Format("15:04:05"), true, nil
+			},
+		}
+		mockRI := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := resep.NewService(&mockRepository{}, oldRJ, mockRI, &mockObatService{}, 48, log)
+		req := resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: inputAfterCheckout.Format("2006-01-02"),
+			JamPeresepan:     inputAfterCheckout.Format("15:04:05"),
 		}
 		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatInap, req)
-		if err == nil {
-			t.Fatal("expected error patient checked out ranap, got nil")
+		var valErr apperror.ValidationError
+		if !errors.As(err, &valErr) || valErr["tanggal_peresepan"] == "" {
+			t.Fatalf("expected ValidationError on tanggal_peresepan when input > checkout, got %v", err)
+		}
+	})
+
+	t.Run("Pasien checkout ranap > 48 jam tidak bisa buat resep ranap", func(t *testing.T) {
+		oldReg := now.Add(-6 * 24 * time.Hour)
+		checkout := now.Add(-50 * time.Hour)
+		inputTime := checkout.Add(-1 * time.Hour)
+		oldRJ := &mockRawatJalanService{
+			getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+				return oldReg.Format("2006-01-02"), oldReg.Format("15:04:05"), true, nil
+			},
+		}
+		mockRI := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := resep.NewService(&mockRepository{}, oldRJ, mockRI, &mockObatService{}, 48, log)
+		req := resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: inputTime.Format("2006-01-02"),
+			JamPeresepan:     inputTime.Format("15:04:05"),
+		}
+		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatInap, req)
+		var fErr *apperror.ForbiddenError
+		if !errors.As(err, &fErr) {
+			t.Fatalf("expected ForbiddenError when > 48h post-checkout, got %v", err)
 		}
 	})
 
@@ -700,7 +783,7 @@ func TestSimpanResep_StatusKamarInap(t *testing.T) {
 		req := resep.SimpanResepRequest{
 			NoRawat:          "2026/08/28/000001",
 			TanggalPeresepan: today,
-			JamPeresepan:     "09:00:00",
+			JamPeresepan:     now.Format("15:04:05"),
 		}
 		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatInap, req)
 		if err == nil {
@@ -975,6 +1058,7 @@ func TestHapusResep_Success(t *testing.T) {
 				NoRawat:           "2026/08/28/000001",
 				KodeDokter:        "DK001",
 				NamaDokter:        "dr. Budi",
+				Status:            "ralan",
 				TanggalPerawatan:  "0000-00-00",
 				JamPerawatan:      "00:00:00",
 				TanggalPenyerahan: "0000-00-00",
@@ -1055,6 +1139,7 @@ func TestHapusResep_ForbiddenOtherDoctor(t *testing.T) {
 				NoRawat:    "2026/08/28/000001",
 				KodeDokter: "DK002",
 				NamaDokter: "dr. Lain",
+				Status:     "ralan",
 			}, nil
 		},
 	}
@@ -1080,6 +1165,7 @@ func TestHapusResep_ForbiddenAlreadyValidatedFarmasi(t *testing.T) {
 				NoResep:          "202608280001",
 				NoRawat:          "2026/08/28/000001",
 				KodeDokter:       "DK001",
+				Status:           "ralan",
 				TanggalPerawatan: "2026-08-28",
 				JamPerawatan:     "10:00:00",
 			}, nil
@@ -1107,6 +1193,7 @@ func TestHapusResep_ForbiddenAlreadyHandedOverFarmasi(t *testing.T) {
 				NoResep:           "202608280001",
 				NoRawat:           "2026/08/28/000001",
 				KodeDokter:        "DK001",
+				Status:            "ralan",
 				TanggalPenyerahan: "2026-08-28",
 				JamPenyerahan:     "11:00:00",
 			}, nil
@@ -1132,9 +1219,14 @@ func TestHapusResep_ForbiddenOver48HoursRalan(t *testing.T) {
 	mockRepo := &mockRepository{
 		detailResepFunc: func(ctx context.Context, noResep string) (*resep.Resep, error) {
 			return &resep.Resep{
-				NoResep:    "202608280001",
-				NoRawat:    "2026/08/28/000001",
-				KodeDokter: "DK001",
+				NoResep:           "202608280001",
+				NoRawat:           "2026/08/28/000001",
+				KodeDokter:        "DK001",
+				Status:            "ralan",
+				TanggalPerawatan:  "0000-00-00",
+				JamPerawatan:      "00:00:00",
+				TanggalPenyerahan: "0000-00-00",
+				JamPenyerahan:     "00:00:00",
 			}, nil
 		},
 	}
@@ -1245,6 +1337,7 @@ func TestUpdateResep_Success(t *testing.T) {
 				NoRawat:           "2026/08/28/000001",
 				KodeDokter:        "DK001",
 				NamaDokter:        "dr. Budi",
+				Status:            "ralan",
 				TanggalPerawatan:  "0000-00-00",
 				JamPerawatan:      "00:00:00",
 				TanggalPenyerahan: "0000-00-00",
@@ -1334,6 +1427,7 @@ func TestUpdateResep_ForbiddenOtherDoctor(t *testing.T) {
 				NoRawat:    "2026/08/28/000001",
 				KodeDokter: "DK002",
 				NamaDokter: "dr. Lain",
+				Status:     "ralan",
 			}, nil
 		},
 	}
@@ -1368,6 +1462,7 @@ func TestUpdateResep_ForbiddenAlreadyValidatedFarmasi(t *testing.T) {
 				NoResep:          "202608280001",
 				NoRawat:          "2026/08/28/000001",
 				KodeDokter:       "DK001",
+				Status:           "ralan",
 				TanggalPerawatan: "2026-08-28",
 				JamPerawatan:     "10:00:00",
 			}, nil
@@ -1404,6 +1499,7 @@ func TestUpdateResep_ForbiddenAlreadyHandedOverFarmasi(t *testing.T) {
 				NoResep:           "202608280001",
 				NoRawat:           "2026/08/28/000001",
 				KodeDokter:        "DK001",
+				Status:            "ralan",
 				TanggalPenyerahan: "2026-08-28",
 				JamPenyerahan:     "11:00:00",
 			}, nil
@@ -1472,9 +1568,14 @@ func TestUpdateResep_ForbiddenOver48HoursRalan(t *testing.T) {
 	mockRepo := &mockRepository{
 		detailResepFunc: func(ctx context.Context, noResep string) (*resep.Resep, error) {
 			return &resep.Resep{
-				NoResep:    "202608280001",
-				NoRawat:    "2026/08/28/000001",
-				KodeDokter: "DK001",
+				NoResep:           "202608280001",
+				NoRawat:           "2026/08/28/000001",
+				KodeDokter:        "DK001",
+				Status:            "ralan",
+				TanggalPerawatan:  "0000-00-00",
+				JamPerawatan:      "00:00:00",
+				TanggalPenyerahan: "0000-00-00",
+				JamPenyerahan:     "00:00:00",
 			}, nil
 		},
 	}
@@ -1562,6 +1663,7 @@ func TestUpdateResep_ObatNotFound(t *testing.T) {
 				NoResep:           "202608280001",
 				NoRawat:           "2026/08/28/000001",
 				KodeDokter:        "DK001",
+				Status:            "ralan",
 				TanggalPerawatan:  "0000-00-00",
 				JamPerawatan:      "00:00:00",
 				TanggalPenyerahan: "0000-00-00",
@@ -1614,6 +1716,7 @@ func TestUpdateResep_MetodeRacikNotFound(t *testing.T) {
 				NoResep:           "202608280001",
 				NoRawat:           "2026/08/28/000001",
 				KodeDokter:        "DK001",
+				Status:            "ralan",
 				TanggalPerawatan:  "0000-00-00",
 				JamPerawatan:      "00:00:00",
 				TanggalPenyerahan: "0000-00-00",
@@ -1732,6 +1835,244 @@ func TestUpdateAndHapusResep_ErrNoRowsMapsToNotFound(t *testing.T) {
 		var notFound *apperror.NotFoundError
 		if !errors.As(err, &notFound) {
 			t.Fatalf("expected *apperror.NotFoundError, got %T (%v)", err, err)
+		}
+	})
+}
+
+func TestUpdateAndHapusResep_StatusLanjutMismatchAndMultiPenjamin(t *testing.T) {
+	now := time.Now()
+	regTime := now.Add(-1 * time.Hour)
+
+	t.Run("UpdateResep dan HapusResep ditolak NotFoundError jika status_lanjut URL tidak cocok", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailResepFunc: func(ctx context.Context, noResep string) (*resep.Resep, error) {
+				return &resep.Resep{
+					NoResep:           noResep,
+					NoRawat:           "2026/08/28/000001",
+					KodeDokter:        "DK001",
+					Status:            "ralan",
+					TanggalPerawatan:  "0000-00-00",
+					JamPerawatan:      "00:00:00",
+					TanggalPenyerahan: "0000-00-00",
+					JamPenyerahan:     "00:00:00",
+				}, nil
+			},
+		}
+		svc := resep.NewService(mockRepo, &mockRawatJalanService{}, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+		_, err := svc.UpdateResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatInap, resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: now.Format("2006-01-02"),
+			JamPeresepan:     now.Format("15:04:05"),
+		})
+		var notFound *apperror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected NotFoundError on UpdateResep status mismatch, got %v", err)
+		}
+
+		err = svc.HapusResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatInap)
+		if !errors.As(err, &notFound) {
+			t.Fatalf("expected NotFoundError on HapusResep status mismatch, got %v", err)
+		}
+	})
+
+	t.Run("Multi kode penjamin kunci bayar (BPJ, UMU) mengunci Umum saat Sudah Bayar", func(t *testing.T) {
+		mockRJ := &mockRawatJalanService{
+			getInfoRegistrasiFunc: func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error) {
+				return &rawatjalan.InfoRegistrasiPasien{
+					TanggalRegistrasi: regTime.Format("2006-01-02"),
+					JamRegistrasi:     regTime.Format("15:04:05"),
+					KodePenjamin:      "UMU",
+					StatusBayar:       "Sudah Bayar",
+				}, nil
+			},
+		}
+		svc := resep.NewService(&mockRepository{}, mockRJ, &mockRawatInapService{}, &mockObatService{}, 48, logger.New(), "BPJ", "UMU")
+
+		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatJalan, resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: now.Format("2006-01-02"),
+			JamPeresepan:     now.Format("15:04:05"),
+		})
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("expected BusinessError when UMU configured in KODE_PENJAMIN_KUNCI_BAYAR, got %v", err)
+		}
+		if bizErr.Error() != "Tagihan kunjungan sudah dibayar, resep tidak dapat disimpan" {
+			t.Errorf("unexpected error message: %s", bizErr.Error())
+		}
+	})
+}
+
+func TestResep_FarmasiValidationLock_MidnightAndEmptyString(t *testing.T) {
+	now := time.Now()
+	regTime := now.Add(-1 * time.Hour)
+
+	mockRJ := &mockRawatJalanService{
+		getInfoRegistrasiFunc: func(ctx context.Context, noRawat string) (*rawatjalan.InfoRegistrasiPasien, error) {
+			return &rawatjalan.InfoRegistrasiPasien{
+				TanggalRegistrasi: regTime.Format("2006-01-02"),
+				JamRegistrasi:     regTime.Format("15:04:05"),
+				KodePenjamin:      "UMU",
+				StatusBayar:       "Belum Bayar",
+			}, nil
+		},
+	}
+
+	t.Run("Validasi farmasi tepat pukul 00:00:00 tetap mengunci hapus & update", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailResepFunc: func(ctx context.Context, noResep string) (*resep.Resep, error) {
+				return &resep.Resep{
+					NoResep:           noResep,
+					NoRawat:           "2026/08/28/000001",
+					KodeDokter:        "DK001",
+					Status:            "ralan",
+					TanggalPerawatan:  "2026-08-29",
+					JamPerawatan:      "00:00:00",
+					TanggalPenyerahan: "0000-00-00",
+					JamPenyerahan:     "00:00:00",
+				}, nil
+			},
+		}
+		svc := resep.NewService(mockRepo, mockRJ, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+		err := svc.HapusResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatJalan)
+		var forbidden *apperror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("expected ForbiddenError when validated at 00:00:00, got %v", err)
+		}
+	})
+
+	t.Run("Penyerahan obat tepat pukul 00:00:00 tetap mengunci hapus & update", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailResepFunc: func(ctx context.Context, noResep string) (*resep.Resep, error) {
+				return &resep.Resep{
+					NoResep:           noResep,
+					NoRawat:           "2026/08/28/000001",
+					KodeDokter:        "DK001",
+					Status:            "ralan",
+					TanggalPerawatan:  "0000-00-00",
+					JamPerawatan:      "00:00:00",
+					TanggalPenyerahan: "2026-08-29",
+					JamPenyerahan:     "00:00:00",
+				}, nil
+			},
+		}
+		svc := resep.NewService(mockRepo, mockRJ, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+		err := svc.HapusResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatJalan)
+		var forbidden *apperror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("expected ForbiddenError when handed over at 00:00:00, got %v", err)
+		}
+	})
+
+	t.Run("Field farmasi kosong string tidak memicu false lock", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			detailResepFunc: func(ctx context.Context, noResep string) (*resep.Resep, error) {
+				return &resep.Resep{
+					NoResep:           noResep,
+					NoRawat:           "2026/08/28/000001",
+					KodeDokter:        "DK001",
+					Status:            "ralan",
+					TanggalPerawatan:  "",
+					JamPerawatan:      "",
+					TanggalPenyerahan: "",
+					JamPenyerahan:     "",
+				}, nil
+			},
+			hapusResepFunc: func(ctx context.Context, noResep string) error {
+				return nil
+			},
+		}
+		svc := resep.NewService(mockRepo, mockRJ, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+		if err := svc.HapusResep(context.Background(), "DK001", "2026/08/28/000001", "202608280001", shared.StatusLanjutRawatJalan); err != nil {
+			t.Fatalf("expected empty pharmacy fields not to lock, got %v", err)
+		}
+	})
+}
+
+func TestSimpanResep_DuplicateKodeObatValidation(t *testing.T) {
+	now := time.Now().Add(-5 * time.Minute)
+	tgl := now.Format("2006-01-02")
+	jam := now.Format("15:04:05")
+	noRawat := "2026/08/28/000001"
+
+	mockRepo := &mockRepository{
+		simpanResepFunc: func(ctx context.Context, kodeDokter string, statusLanjut shared.StatusLanjut, req resep.SimpanResepRequest) (*resep.Resep, error) {
+			return &resep.Resep{NoResep: "202608280001", NoRawat: req.NoRawat, Status: "ralan"}, nil
+		},
+	}
+	svc := resep.NewService(mockRepo, &mockRawatJalanService{}, &mockRawatInapService{}, &mockObatService{}, 48, logger.New())
+
+	t.Run("Duplikat KodeObat pada ResepDokter mengembalikan ValidationError", func(t *testing.T) {
+		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatJalan, resep.SimpanResepRequest{
+			NoRawat:          noRawat,
+			TanggalPeresepan: tgl,
+			JamPeresepan:     jam,
+			ResepDokter: []resep.ResepDokterInput{
+				{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 5}, AturanPakai: "3x1"},
+				{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 10}, AturanPakai: "2x1"},
+			},
+		})
+		var valErr apperror.ValidationError
+		if !errors.As(err, &valErr) || valErr["resep_dokter[1].id_obat"] == "" {
+			t.Fatalf("expected ValidationError on resep_dokter[1].id_obat, got %v", err)
+		}
+	})
+
+	t.Run("Duplikat KodeObat dalam satu ResepRacikan mengembalikan ValidationError", func(t *testing.T) {
+		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatJalan, resep.SimpanResepRequest{
+			NoRawat:          noRawat,
+			TanggalPeresepan: tgl,
+			JamPeresepan:     jam,
+			ResepRacikan: []resep.ResepRacikanInput{
+				{
+					NamaRacik:     "Puyer",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "3x1",
+					Detail: []resep.ResepRacikanDetailInput{
+						{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 5}},
+						{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 2}},
+					},
+				},
+			},
+		})
+		var valErr apperror.ValidationError
+		if !errors.As(err, &valErr) || valErr["resep_racikan[0].detail[1].id_obat"] == "" {
+			t.Fatalf("expected ValidationError on resep_racikan[0].detail[1].id_obat, got %v", err)
+		}
+	})
+
+	t.Run("KodeObat sama antara non-racikan dan racikan berbeda tetap sukses", func(t *testing.T) {
+		_, err := svc.SimpanResep(context.Background(), "DK001", shared.StatusLanjutRawatJalan, resep.SimpanResepRequest{
+			NoRawat:          noRawat,
+			TanggalPeresepan: tgl,
+			JamPeresepan:     jam,
+			ResepDokter: []resep.ResepDokterInput{
+				{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 5}, AturanPakai: "3x1"},
+			},
+			ResepRacikan: []resep.ResepRacikanInput{
+				{
+					NamaRacik:     "Puyer 1",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "1x1",
+					Detail:        []resep.ResepRacikanDetailInput{{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 5}}},
+				},
+				{
+					NamaRacik:     "Puyer 2",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "1x1",
+					Detail:        []resep.ResepRacikanDetailInput{{ItemObatInput: resep.ItemObatInput{KodeObat: "OB001", Jumlah: 5}}},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected success across separate racikan/non-racikan, got %v", err)
 		}
 	})
 }

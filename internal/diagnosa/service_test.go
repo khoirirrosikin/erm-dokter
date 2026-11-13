@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"erm-dokter/internal/diagnosa"
 	"erm-dokter/internal/master"
 	"erm-dokter/internal/pkg/eklaim"
@@ -191,7 +193,9 @@ func (m *mockRawatJalanService) DetailKunjungan(ctx context.Context, noRawat, kd
 
 type mockRawatInapService struct {
 	rawatinap.Service
-	cekStatusKamarInapFunc func(ctx context.Context, noRawat string) (bool, bool, error)
+	cekStatusKamarInapFunc     func(ctx context.Context, noRawat string) (bool, bool, error)
+	getWaktuKeluarTerakhirFunc func(ctx context.Context, noRawat string) (string, string, error)
+	getKelasRawatFunc          func(ctx context.Context, noRawat string) (string, error)
 }
 
 func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
@@ -199,6 +203,20 @@ func (m *mockRawatInapService) CekStatusKamarInap(ctx context.Context, noRawat s
 		return m.cekStatusKamarInapFunc(ctx, noRawat)
 	}
 	return false, false, nil
+}
+
+func (m *mockRawatInapService) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	if m.getWaktuKeluarTerakhirFunc != nil {
+		return m.getWaktuKeluarTerakhirFunc(ctx, noRawat)
+	}
+	return "", "", nil
+}
+
+func (m *mockRawatInapService) GetKelasRawat(ctx context.Context, noRawat string) (string, error) {
+	if m.getKelasRawatFunc != nil {
+		return m.getKelasRawatFunc(ctx, noRawat)
+	}
+	return "Kelas 3", nil
 }
 
 type mockMasterService struct {
@@ -893,7 +911,7 @@ func TestSimulasiEklaim(t *testing.T) {
 			Prosedur: []string{"88.72"},
 		}
 
-		res, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", req)
+		res, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", shared.StatusLanjutRawatJalan, req)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -957,7 +975,7 @@ func TestSimulasiEklaim(t *testing.T) {
 
 		req := diagnosa.SimulasiEklaimRequest{}
 
-		res, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", req)
+		res, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", shared.StatusLanjutRawatJalan, req)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -985,7 +1003,7 @@ func TestSimulasiEklaim(t *testing.T) {
 
 		svc := setupTestService(repo, rj, &mockRawatInapService{}, &mockMasterService{})
 
-		_, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", diagnosa.SimulasiEklaimRequest{})
+		_, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", shared.StatusLanjutRawatJalan, diagnosa.SimulasiEklaimRequest{})
 		if err == nil {
 			t.Fatal("Expected error for empty diagnoses, got nil")
 		}
@@ -1018,7 +1036,7 @@ func TestSimulasiEklaim(t *testing.T) {
 			Diagnosa: []string{"I50.9"},
 		}
 
-		_, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", req)
+		_, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", shared.StatusLanjutRawatJalan, req)
 		if err == nil {
 			t.Fatal("Expected error when eklaim fails, got nil")
 		}
@@ -1026,6 +1044,185 @@ func TestSimulasiEklaim(t *testing.T) {
 		var bErr *apperror.BusinessError
 		if !errors.As(err, &bErr) {
 			t.Fatalf("Expected BusinessError, got %v", err)
+		}
+	})
+
+	t.Run("Gagal simulasi ranap jika pasien belum terdaftar di kamar inap", func(t *testing.T) {
+		rj := &mockRawatJalanService{
+			detailKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (*rawatjalan.KunjunganRawatJalan, error) {
+				return &rawatjalan.KunjunganRawatJalan{
+					NoRawat:      noRawat,
+					StatusLanjut: shared.StatusLanjutRawatJalan,
+				}, nil
+			},
+		}
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, false, nil
+			},
+		}
+		svc := setupTestService(&mockRepository{}, rj, ri, &mockMasterService{})
+		_, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", shared.StatusLanjutRawatInap, diagnosa.SimulasiEklaimRequest{Diagnosa: []string{"I50.9"}})
+		var bErr *apperror.BusinessError
+		if !errors.As(err, &bErr) {
+			t.Fatalf("Expected BusinessError for ranap without kamar_inap, got %v", err)
+		}
+	})
+
+	t.Run("Simulasi ranap memakai TanggalPulang hari ini dan meneruskan context pembatalan", func(t *testing.T) {
+		today := time.Now().Format("2006-01-02")
+		regDate := time.Now().Add(-3 * 24 * time.Hour).Format("2006-01-02")
+
+		rj := &mockRawatJalanService{
+			detailKunjunganFunc: func(ctx context.Context, noRawat string, kodeDokter string) (*rawatjalan.KunjunganRawatJalan, error) {
+				return &rawatjalan.KunjunganRawatJalan{
+					NoRawat:           noRawat,
+					TanggalRegistrasi: regDate,
+					StatusLanjut:      shared.StatusLanjutRawatInap,
+				}, nil
+			},
+		}
+		ri := &mockRawatInapService{
+			getKelasRawatFunc: func(ctx context.Context, noRawat string) (string, error) {
+				return "Kelas 2", nil
+			},
+		}
+
+		var gotTglMasuk, gotTglPulang string
+		mockEk := &mockEklaimClient{
+			simulasiGrouperFunc: func(ctx context.Context, param eklaim.ParameterSimulasi) (*eklaim.HasilSimulasi, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				gotTglMasuk = param.TanggalMasuk
+				gotTglPulang = param.TanggalPulang
+				return &eklaim.HasilSimulasi{KodeCBG: "I-1-10-I", Tarif: 5000000}, nil
+			},
+		}
+
+		svc := setupTestServiceWithEklaim(&mockRepository{}, rj, ri, &mockMasterService{}, mockEk)
+		if _, err := svc.SimulasiEklaim(context.Background(), "2026/09/18/000001", shared.StatusLanjutRawatInap, diagnosa.SimulasiEklaimRequest{Diagnosa: []string{"I50.9"}}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotTglMasuk != regDate || gotTglPulang != today {
+			t.Errorf("expected TanggalMasuk=%s TanggalPulang=%s, got Masuk=%s Pulang=%s", regDate, today, gotTglMasuk, gotTglPulang)
+		}
+
+		canceledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := svc.SimulasiEklaim(canceledCtx, "2026/09/18/000001", shared.StatusLanjutRawatInap, diagnosa.SimulasiEklaimRequest{Diagnosa: []string{"I50.9"}}); err == nil {
+			t.Fatal("expected canceled context to fail SimulasiEklaim")
+		}
+	})
+}
+
+func TestTambahDiagnosa_PostCheckoutRanapGraceWindow(t *testing.T) {
+	oldReg := time.Now().Add(-5 * 24 * time.Hour)
+	rj := &mockRawatJalanService{
+		getWaktuRegistrasiFunc: func(ctx context.Context, noRawat string) (string, string, bool, error) {
+			return oldReg.Format("2006-01-02"), oldReg.Format("15:04:05"), true, nil
+		},
+	}
+
+	t.Run("Diizinkan pada ranap dan ralan jika checkout <= 48 jam", func(t *testing.T) {
+		checkout := time.Now().Add(-12 * time.Hour)
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := setupTestService(&mockRepository{}, rj, ri, &mockMasterService{})
+
+		for _, st := range []shared.StatusLanjut{shared.StatusLanjutRawatInap, shared.StatusLanjutRawatJalan} {
+			if _, err := svc.TambahDiagnosa(context.Background(), "2026/09/10/000001", st, diagnosa.TambahDiagnosaRequest{Kode: "I10"}); err != nil {
+				t.Fatalf("expected allowed for %s within +48h post-checkout, got %v", st, err)
+			}
+		}
+	})
+
+	t.Run("Ditolak ForbiddenError jika checkout > 48 jam", func(t *testing.T) {
+		checkout := time.Now().Add(-50 * time.Hour)
+		ri := &mockRawatInapService{
+			cekStatusKamarInapFunc: func(ctx context.Context, noRawat string) (bool, bool, error) {
+				return false, true, nil
+			},
+			getWaktuKeluarTerakhirFunc: func(ctx context.Context, noRawat string) (string, string, error) {
+				return checkout.Format("2006-01-02"), checkout.Format("15:04:05"), nil
+			},
+		}
+		svc := setupTestService(&mockRepository{}, rj, ri, &mockMasterService{})
+
+		for _, st := range []shared.StatusLanjut{shared.StatusLanjutRawatInap, shared.StatusLanjutRawatJalan} {
+			_, err := svc.TambahDiagnosa(context.Background(), "2026/09/10/000001", st, diagnosa.TambahDiagnosaRequest{Kode: "I10"})
+			var fErr *apperror.ForbiddenError
+			if !errors.As(err, &fErr) {
+				t.Fatalf("expected ForbiddenError for %s > 48h post-checkout, got %v", st, err)
+			}
+		}
+	})
+}
+
+func TestTambahDiagnosaDanProsedur_DuplicateEntry1062AndMaxPrioritas(t *testing.T) {
+	dupErr := &mysql.MySQLError{Number: 1062, Message: "Duplicate entry"}
+
+	t.Run("TambahDiagnosa race condition 1062 mengembalikan BusinessError", func(t *testing.T) {
+		repo := &mockRepository{
+			cekDuplikasiDiagnosaFunc: func(ctx context.Context, noRawat, kodePenyakit string, status shared.StatusLanjut) (bool, error) {
+				return false, nil
+			},
+			tambahDiagnosaFunc: func(ctx context.Context, d diagnosa.DiagnosaPasien) error {
+				return dupErr
+			},
+		}
+		svc := setupTestService(repo, &mockRawatJalanService{}, &mockRawatInapService{}, &mockMasterService{})
+		_, err := svc.TambahDiagnosa(context.Background(), "2026/09/17/000001", shared.StatusLanjutRawatJalan, diagnosa.TambahDiagnosaRequest{Kode: "I10"})
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("expected *apperror.BusinessError on MySQL 1062, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("TambahProsedur race condition 1062 mengembalikan BusinessError", func(t *testing.T) {
+		repo := &mockRepository{
+			cekDuplikasiProsedurFunc: func(ctx context.Context, noRawat, kodeProsedur string, status shared.StatusLanjut) (bool, error) {
+				return false, nil
+			},
+			tambahProsedurFunc: func(ctx context.Context, p diagnosa.ProsedurPasien) error {
+				return dupErr
+			},
+		}
+		svc := setupTestService(repo, &mockRawatJalanService{}, &mockRawatInapService{}, &mockMasterService{})
+		_, err := svc.TambahProsedur(context.Background(), "2026/09/17/000001", shared.StatusLanjutRawatJalan, diagnosa.TambahProsedurRequest{Kode: "87.03"})
+		var bizErr *apperror.BusinessError
+		if !errors.As(err, &bizErr) {
+			t.Fatalf("expected *apperror.BusinessError on MySQL 1062, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("Auto-increment prioritas menolak jika sudah mencapai 127", func(t *testing.T) {
+		repo := &mockRepository{
+			getMaxPrioritasDiagnosaFunc: func(ctx context.Context, noRawat string, status shared.StatusLanjut) (int, error) {
+				return 127, nil
+			},
+			getMaxPrioritasProsedurFunc: func(ctx context.Context, noRawat string, status shared.StatusLanjut) (int, error) {
+				return 127, nil
+			},
+		}
+		svc := setupTestService(repo, &mockRawatJalanService{}, &mockRawatInapService{}, &mockMasterService{})
+
+		_, errDiag := svc.TambahDiagnosa(context.Background(), "2026/09/17/000001", shared.StatusLanjutRawatJalan, diagnosa.TambahDiagnosaRequest{Kode: "I10"})
+		var bizDiag *apperror.BusinessError
+		if !errors.As(errDiag, &bizDiag) {
+			t.Fatalf("expected BusinessError when diagnosa max prioritas is 127, got %v", errDiag)
+		}
+
+		_, errPros := svc.TambahProsedur(context.Background(), "2026/09/17/000001", shared.StatusLanjutRawatJalan, diagnosa.TambahProsedurRequest{Kode: "87.03"})
+		var bizPros *apperror.BusinessError
+		if !errors.As(errPros, &bizPros) {
+			t.Fatalf("expected BusinessError when prosedur max prioritas is 127, got %v", errPros)
 		}
 	})
 }

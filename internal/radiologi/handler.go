@@ -202,6 +202,9 @@ func (h *Handler) SimpanPermintaanRadiologi(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoPermintaan, data.NoPermintaan)
+	}
 	h.encryptDetailPermintaanRadiologi(data)
 	response.Created(w, "Berhasil menyimpan permintaan radiologi", data)
 }
@@ -299,6 +302,9 @@ func (h *Handler) DetailPermintaanRadiologi(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if data != nil {
+		middleware.SetLogRef(w, middleware.HeaderLogNoRawat, data.NoRawat)
+	}
 	h.encryptDetailPermintaanRadiologi(data)
 	response.Success(w, "Berhasil mengambil detail permintaan radiologi", data)
 }
@@ -404,6 +410,7 @@ func (h *Handler) HapusPermintaanRadiologi(w http.ResponseWriter, r *http.Reques
 
 func (h *Handler) decryptPermintaanPayload(req *SimpanPermintaanRadiologiRequest) error {
 	valErrs := make(apperror.ValidationError)
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 
 	for i := range req.Pemeriksaan {
 		plainTindakan, err := crypto.Decrypt(req.Pemeriksaan[i].IdTindakan, h.encryptionKey)
@@ -411,6 +418,11 @@ func (h *Handler) decryptPermintaanPayload(req *SimpanPermintaanRadiologiRequest
 			valErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = "ID tindakan tidak valid"
 			continue
 		}
+		if seenTindakan[plainTindakan] {
+			valErrs[fmt.Sprintf("pemeriksaan[%d].id_tindakan", i)] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan radiologi tidak boleh duplikat", i+1)
+			continue
+		}
+		seenTindakan[plainTindakan] = true
 		req.Pemeriksaan[i].KodeTindakan = plainTindakan
 	}
 

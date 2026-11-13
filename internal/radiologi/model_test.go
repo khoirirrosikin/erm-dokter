@@ -222,6 +222,21 @@ func TestSimpanPermintaanRadiologiRequest_SanitizeAndValidate(t *testing.T) {
 	if _, ok := errsInvalid["pemeriksaan"]; !ok {
 		t.Errorf("Expected pemeriksaan error, got %v", errsInvalid)
 	}
+
+	dupReq := radiologi.SimpanPermintaanRadiologiRequest{
+		NoRawat:           "2026/09/05/000001",
+		TanggalPermintaan: "2026-09-05",
+		JamPermintaan:     "10:00:00",
+		DiagnosaKlinis:    "Batuk",
+		Pemeriksaan: []radiologi.ItemPemeriksaanRadiologiRequest{
+			{IdTindakan: "enc123"},
+			{IdTindakan: "enc123"},
+		},
+	}
+	errsDup := dupReq.Validate()
+	if errsDup == nil || errsDup["pemeriksaan[1].id_tindakan"] == "" {
+		t.Fatalf("Expected duplicate id_tindakan validation error on pemeriksaan[1].id_tindakan, got %v", errsDup)
+	}
 }
 
 func TestFilterRiwayatPermintaanRadiologi_SanitizeAndValidate(t *testing.T) {

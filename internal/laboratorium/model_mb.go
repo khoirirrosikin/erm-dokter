@@ -64,14 +64,24 @@ func (req SimpanPermintaanLabMBRequest) Validate() apperror.ValidationError {
 		errs["pemeriksaan"] = "Pemeriksaan laboratorium minimal harus memilih 1 tindakan"
 	}
 
+	seenTindakan := make(map[string]bool, len(req.Pemeriksaan))
 	for i, item := range req.Pemeriksaan {
 		prefix := fmt.Sprintf("pemeriksaan[%d]", i)
 		if item.IdTindakan == "" {
 			errs[prefix+".id_tindakan"] = fmt.Sprintf("Pemeriksaan ke-%d: ID tindakan wajib diisi", i+1)
+		} else if seenTindakan[item.IdTindakan] {
+			errs[prefix+".id_tindakan"] = fmt.Sprintf("Pemeriksaan ke-%d: Tindakan laboratorium tidak boleh duplikat", i+1)
+		} else {
+			seenTindakan[item.IdTindakan] = true
 		}
+		seenTemplate := make(map[string]bool, len(item.IdTemplate))
 		for j, idTemplate := range item.IdTemplate {
 			if idTemplate == "" {
 				errs[fmt.Sprintf("%s.id_template[%d]", prefix, j)] = fmt.Sprintf("Pemeriksaan ke-%d parameter ke-%d: ID template pengujian wajib diisi", i+1, j+1)
+			} else if seenTemplate[idTemplate] {
+				errs[fmt.Sprintf("%s.id_template[%d]", prefix, j)] = fmt.Sprintf("Pemeriksaan ke-%d parameter ke-%d: Template pengujian tidak boleh duplikat", i+1, j+1)
+			} else {
+				seenTemplate[idTemplate] = true
 			}
 		}
 	}

@@ -87,3 +87,53 @@ func TestValidasiRentangTanggal(t *testing.T) {
 		t.Error("expected validation error when tglAwal > tglAkhir")
 	}
 }
+
+func TestIsPenjaminTerkunciSudahBayar(t *testing.T) {
+	if !shared.IsPenjaminTerkunciSudahBayar("Sudah Bayar", "BPJ", nil) {
+		t.Error("expected default nil list to lock BPJ when Sudah Bayar")
+	}
+	if shared.IsPenjaminTerkunciSudahBayar("Sudah Bayar", "UMU", nil) {
+		t.Error("expected default nil list not to lock UMU")
+	}
+	if shared.IsPenjaminTerkunciSudahBayar("Belum Bayar", "BPJ", []string{"BPJ", "UMU"}) {
+		t.Error("expected Belum Bayar never to lock")
+	}
+	if !shared.IsPenjaminTerkunciSudahBayar("Sudah Bayar", "umu", []string{"BPJ", "UMU"}) {
+		t.Error("expected configured UMU to lock case-insensitively")
+	}
+	if !shared.IsPenjaminTerkunciSudahBayar("Sudah Bayar", "A09", []string{"*"}) {
+		t.Error("expected wildcard * to lock any penjamin when Sudah Bayar")
+	}
+	if shared.IsPenjaminTerkunciSudahBayar("Sudah Bayar", "BPJ", []string{"-"}) {
+		t.Error("expected '-' to disable Sudah Bayar lock")
+	}
+
+	if got := shared.PesanTerkunciSudahBayar("BPJ", "resep", "disimpan"); got != "Pasien BPJS sudah bayar, resep tidak dapat disimpan" {
+		t.Errorf("unexpected BPJ message: %s", got)
+	}
+	if got := shared.PesanTerkunciSudahBayar("UMU", "resep", "disimpan"); got != "Tagihan kunjungan sudah dibayar, resep tidak dapat disimpan" {
+		t.Errorf("unexpected non-BPJ message: %s", got)
+	}
+}
+
+func TestIsNonZeroDateAndTime(t *testing.T) {
+	zeroDates := []string{"", "   ", "0000-00-00", " 0000-00-00 "}
+	for _, d := range zeroDates {
+		if shared.IsNonZeroDate(d) {
+			t.Errorf("expected IsNonZeroDate(%q) to be false", d)
+		}
+	}
+	if !shared.IsNonZeroDate("2026-11-13") {
+		t.Error("expected IsNonZeroDate(\"2026-11-13\") to be true")
+	}
+
+	zeroTimes := []string{"", "   ", "00:00:00", " 00:00:00 "}
+	for _, tm := range zeroTimes {
+		if shared.IsNonZeroTime(tm) {
+			t.Errorf("expected IsNonZeroTime(%q) to be false", tm)
+		}
+	}
+	if !shared.IsNonZeroTime("00:00:01") || !shared.IsNonZeroTime("14:30:00") {
+		t.Error("expected valid non-zero times to return true")
+	}
+}

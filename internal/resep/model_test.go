@@ -300,3 +300,83 @@ func TestSimpanResepRequest_Validate_InvalidRacikanDetail(t *testing.T) {
 		t.Error("expected error for detail jumlah")
 	}
 }
+
+func TestSimpanResepRequest_Validate_DuplicateObat(t *testing.T) {
+	pastTime := time.Now().Add(-5 * time.Minute)
+	tgl := pastTime.Format("2006-01-02")
+	jam := pastTime.Format("15:04:05")
+
+	t.Run("Duplikat id_obat pada resep_dokter ditolak", func(t *testing.T) {
+		req := resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: tgl,
+			JamPeresepan:     jam,
+			ResepDokter: []resep.ResepDokterInput{
+				{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 5}, AturanPakai: "3x1"},
+				{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 10}, AturanPakai: "2x1"},
+			},
+		}
+		errs := req.Validate()
+		if errs == nil || errs["resep_dokter[1].id_obat"] == "" {
+			t.Fatalf("expected validation error on resep_dokter[1].id_obat, got %+v", errs)
+		}
+	})
+
+	t.Run("Duplikat id_obat dalam satu racikan ditolak", func(t *testing.T) {
+		req := resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: tgl,
+			JamPeresepan:     jam,
+			ResepRacikan: []resep.ResepRacikanInput{
+				{
+					NamaRacik:     "Puyer",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "3x1",
+					Detail: []resep.ResepRacikanDetailInput{
+						{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 5}},
+						{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 2}},
+					},
+				},
+			},
+		}
+		errs := req.Validate()
+		if errs == nil || errs["resep_racikan[0].detail[1].id_obat"] == "" {
+			t.Fatalf("expected validation error on resep_racikan[0].detail[1].id_obat, got %+v", errs)
+		}
+	})
+
+	t.Run("Obat yang sama antara non-racikan dan racikan atau antar-racikan berbeda tetap diizinkan", func(t *testing.T) {
+		req := resep.SimpanResepRequest{
+			NoRawat:          "2026/08/28/000001",
+			TanggalPeresepan: tgl,
+			JamPeresepan:     jam,
+			ResepDokter: []resep.ResepDokterInput{
+				{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 5}, AturanPakai: "3x1"},
+			},
+			ResepRacikan: []resep.ResepRacikanInput{
+				{
+					NamaRacik:     "Puyer Pagi",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "1x1 pagi",
+					Detail: []resep.ResepRacikanDetailInput{
+						{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 5}},
+					},
+				},
+				{
+					NamaRacik:     "Puyer Malam",
+					KodeRacik:     "R01",
+					JumlahRacikan: 10,
+					AturanPakai:   "1x1 malam",
+					Detail: []resep.ResepRacikanDetailInput{
+						{ItemObatInput: resep.ItemObatInput{IdObat: "enc-obat-1", Jumlah: 5}},
+					},
+				},
+			},
+		}
+		if errs := req.Validate(); errs != nil {
+			t.Fatalf("expected no validation error across separate racikan/non-racikan, got %+v", errs)
+		}
+	})
+}
