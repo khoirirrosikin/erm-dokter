@@ -11,7 +11,7 @@ import (
 )
 
 func TestIPWhitelistMiddleware(t *testing.T) {
-	allowedIPs := []string{"198.51.100.10", "198.51.100.20", "10.10.0.0/16"}
+	allowedIPs := []string{"198.51.100.10", "198.51.100.20", "10.10.0.0/16", "::ffff:198.51.100.30", "::ffff:10.20.0.0/112"}
 	mw := middleware.IPWhitelistMiddleware(allowedIPs)
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +85,18 @@ func TestIPWhitelistMiddleware(t *testing.T) {
 			expectedStatus: http.StatusForbidden,
 		},
 		{
+			name:           "Allowed server IP configured as IPv4-mapped IPv6 literal",
+			path:           "/api/v1/rawat-jalan",
+			remoteAddr:     "198.51.100.30:51234",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Allowed server subnet configured as IPv4-mapped IPv6 CIDR",
+			path:           "/api/v1/rawat-jalan",
+			remoteAddr:     "10.20.3.4:51234",
+			expectedStatus: http.StatusOK,
+		},
+		{
 			name:           "Bypass health check endpoint regardless of IP",
 			path:           "/health",
 			remoteAddr:     "192.0.2.100:51234",
@@ -121,4 +133,39 @@ func TestIPWhitelistMiddleware(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIPWhitelistMiddlewareWithProxies(t *testing.T) {
+	allowedIPs := []string{"198.51.100.10"}
+	trustedProxies := []string{"127.0.0.1"}
+	mw := middleware.IPWhitelistMiddlewareWithProxies(allowedIPs, trustedProxies)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	t.Run("Allows FE server behind local reverse proxy while doctor browser IP is leftmost", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rawat-jalan", nil)
+		req.RemoteAddr = "127.0.0.1:41000"
+		req.Header.Set("X-Forwarded-For", "192.168.30.153, 198.51.100.10")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", rec.Code)
+		}
+	})
+
+	t.Run("Rejects attacker spoofing X-Forwarded-For behind local reverse proxy", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rawat-jalan", nil)
+		req.RemoteAddr = "127.0.0.1:41000"
+		req.Header.Add("X-Forwarded-For", "198.51.100.10")
+		req.Header.Add("X-Forwarded-For", "192.0.2.100")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden, got %d", rec.Code)
+		}
+	})
 }

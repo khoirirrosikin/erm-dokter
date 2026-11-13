@@ -29,10 +29,6 @@ func RequestIDMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Method", r.Method)
 		w.Header().Set("X-Request-Path", r.URL.Path)
 
-		if user := extractUserFromRequest(r); user != "" && user != "-" {
-			w.Header().Set("X-User-ID", user)
-		}
-
 		ctx := logger.WithRequestID(r.Context(), reqID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

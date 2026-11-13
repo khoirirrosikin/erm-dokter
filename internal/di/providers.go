@@ -52,10 +52,15 @@ func ProvideRouteConfig(db *sql.DB, cfg *config.Config, log *logger.Logger) *rou
 		cfg.AllowedIPs,
 	)
 
-	rc.LoginRateLimitMiddleware = middleware.LoginRateLimitMiddleware(
+	rc.Logger = log
+	rc.EncryptionKey = cfg.EncryptionKey
+	rc.TrustedProxies = cfg.TrustedProxies
+
+	rc.LoginRateLimitMiddleware = middleware.LoginRateLimitMiddlewareWithProxies(
 		cfg.LoginRateLimitRate,
 		time.Duration(cfg.LoginRateLimitWindowMinutes)*time.Minute,
 		cfg.LoginRateLimitEnabled,
+		rc.EffectiveClientIPProxies(),
 	)
 
 	return rc

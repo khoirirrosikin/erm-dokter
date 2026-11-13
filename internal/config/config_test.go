@@ -173,5 +173,40 @@ func TestConfig_Validate_Production_AllowedIPsRequired(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Expected validation to pass when AllowedIPs is provided, got: %v", err)
 	}
+
+	cfg.AllowedIPs = []string{"bukan-ip-valid"}
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("Expected validation error for malformed ALLOWED_IPS")
+	}
+
+	cfg.AllowedIPs = []string{"10.0.0.1", "192.168.1.0/24"}
+	cfg.TrustedProxies = []string{"127.0.0.1", "::1"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Expected validation to pass with valid TrustedProxies, got: %v", err)
+	}
+
+	cfg.TrustedProxies = []string{"10.0.0.1/99"}
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("Expected validation error for malformed TRUSTED_PROXIES")
+	}
+}
+
+func TestConfigLoad_KodePenjaminKunciBayar(t *testing.T) {
+	os.Unsetenv("KODE_PENJAMIN_KUNCI_BAYAR")
+	cfgDefault := config.Load()
+	if len(cfgDefault.KodePenjaminKunciBayar) != 1 || cfgDefault.KodePenjaminKunciBayar[0] != "BPJ" {
+		t.Fatalf("Expected default KodePenjaminKunciBayar ['BPJ'], got %v", cfgDefault.KodePenjaminKunciBayar)
+	}
+
+	os.Setenv("KODE_PENJAMIN_KUNCI_BAYAR", "BPJ, UMU, A09")
+	defer os.Unsetenv("KODE_PENJAMIN_KUNCI_BAYAR")
+
+	cfgCustom := config.Load()
+	if len(cfgCustom.KodePenjaminKunciBayar) != 3 ||
+		cfgCustom.KodePenjaminKunciBayar[0] != "BPJ" ||
+		cfgCustom.KodePenjaminKunciBayar[1] != "UMU" ||
+		cfgCustom.KodePenjaminKunciBayar[2] != "A09" {
+		t.Fatalf("Unexpected custom KodePenjaminKunciBayar: %v", cfgCustom.KodePenjaminKunciBayar)
+	}
 }
 

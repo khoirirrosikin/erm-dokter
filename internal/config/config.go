@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ type Config struct {
 	EncryptionKey               string
 	CORSOrigin                  string
 	MaxEditRekamMedisJam        int
+	KodePenjaminKunciBayar      []string
 	URLBerkasDigital            string
 	ServiceAPIKey               string
 	KodeBerkasLabPK             []string
@@ -42,7 +44,8 @@ type Config struct {
 	EKLAIMKodeTarif             string
 	EKLAIMDefaultCoderNIK       string
 	URLAntreanPoli              string
-	AllowedIPs                 []string
+	AllowedIPs                  []string
+	TrustedProxies              []string
 }
 
 func (c *Config) IsProduction() bool {
@@ -89,6 +92,11 @@ func Load() *Config {
 		return result
 	}
 
+	kodePenjaminKunciBayar := parseKodeSlice("KODE_PENJAMIN_KUNCI_BAYAR")
+	if len(kodePenjaminKunciBayar) == 0 {
+		kodePenjaminKunciBayar = []string{"BPJ"}
+	}
+
 	rawAllowedIPs := strings.TrimSpace(os.Getenv("ALLOWED_IPS"))
 	var allowedIPs []string
 	if rawAllowedIPs != "" {
@@ -114,6 +122,7 @@ func Load() *Config {
 		EncryptionKey:               os.Getenv("ENCRYPTION_KEY"),
 		CORSOrigin:                  getEnvOrDefault("CORS_ORIGIN", "*"),
 		MaxEditRekamMedisJam:        maxEditJam,
+		KodePenjaminKunciBayar:      kodePenjaminKunciBayar,
 		URLBerkasDigital:            os.Getenv("URL_BERKAS_DIGITAL"),
 		ServiceAPIKey:               strings.TrimSpace(os.Getenv("SERVICE_API_KEY")),
 		KodeBerkasLabPK:             parseKodeSlice("KODE_BERKAS_LAB_PK"),
@@ -131,7 +140,8 @@ func Load() *Config {
 		EKLAIMKodeTarif:             getEnvOrDefault("EKLAIM_KODE_TARIF", "BP"),
 		EKLAIMDefaultCoderNIK:       getEnvOrDefault("EKLAIM_NIK_CODER", "1234567890123456"),
 		URLAntreanPoli:              strings.TrimSpace(os.Getenv("URL_ANTREAN_POLI")),
-		AllowedIPs:                 allowedIPs,
+		AllowedIPs:                  allowedIPs,
+		TrustedProxies:              parseKodeSlice("TRUSTED_PROXIES"),
 	}
 	return cfg
 }
@@ -151,8 +161,40 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("environment variable %s wajib diisi", key)
 		}
 	}
-	if c.IsProduction() && len(c.AllowedIPs) == 0 {
-		return fmt.Errorf("environment variable ALLOWED_IPS wajib diisi pada mode production")
+	if err := validateIPOrCIDRList("ALLOWED_IPS", c.AllowedIPs); err != nil {
+		return err
+	}
+	if err := validateIPOrCIDRList("TRUSTED_PROXIES", c.TrustedProxies); err != nil {
+		return err
+	}
+	if c.IsProduction() {
+		hasValidAllowed := false
+		for _, ip := range c.AllowedIPs {
+			if strings.TrimSpace(ip) != "" {
+				hasValidAllowed = true
+				break
+			}
+		}
+		if !hasValidAllowed {
+			return fmt.Errorf("environment variable ALLOWED_IPS wajib diisi pada mode production")
+		}
+	}
+	return nil
+}
+
+func validateIPOrCIDRList(envName string, entries []string) error {
+	for _, raw := range entries {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if _, err := netip.ParsePrefix(trimmed); err == nil {
+			continue
+		}
+		if _, err := netip.ParseAddr(trimmed); err == nil {
+			continue
+		}
+		return fmt.Errorf("environment variable %s mengandung format IP/CIDR tidak valid: %q", envName, trimmed)
 	}
 	return nil
 }

@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"erm-dokter/internal/middleware"
+	"erm-dokter/internal/pkg/crypto"
 	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/pkg/response"
 	"erm-dokter/internal/pkg/token"
@@ -86,7 +88,10 @@ func TestLoggingMiddleware_StatusCodesAndOutputFormat(t *testing.T) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.returnCode)
 			})
-			wrapped := middleware.LoggingMiddlewareWithLogger(testLogger)(handler)
+			wrapped := middleware.LoggingMiddlewareWithOptions(middleware.LoggingOptions{
+				Logger:         testLogger,
+				TrustedProxies: []string{"192.0.2.1", "198.51.100.1"},
+			})(handler)
 
 			req := httptest.NewRequest("POST", "/api/v1/test?filter=aktif", nil)
 			req.Header.Set("X-Forwarded-For", "203.0.113.195, 198.51.100.1")
@@ -123,6 +128,31 @@ func TestLoggingMiddleware_StatusCodesAndOutputFormat(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("Untrusted RemoteAddr ignores spoofed X-Forwarded-For in logs", func(t *testing.T) {
+		buf.Reset()
+		wrapped := middleware.LoggingMiddlewareWithOptions(middleware.LoggingOptions{
+			Logger:         testLogger,
+			TrustedProxies: []string{"198.51.100.10"},
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+
+		req := httptest.NewRequest("GET", "/api/v1/test", nil)
+		req.RemoteAddr = "192.0.2.99:54321"
+		req.Header.Set("X-Forwarded-For", "198.51.100.10")
+
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		var parsed map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
+		}
+		if parsed["client_ip"] != "192.0.2.99" {
+			t.Errorf("expected real attacker IP 192.0.2.99, got %v", parsed["client_ip"])
+		}
+	})
 }
 
 func TestLoggingMiddleware_WithErrorDetailAndUser(t *testing.T) {
@@ -218,4 +248,133 @@ func TestLoggingMiddleware_WithSuccessMessage(t *testing.T) {
 	if parsed["status"] != float64(200) {
 		t.Errorf("expected status 200, got %v", parsed["status"])
 	}
+}
+
+func TestLoggingMiddlewareWithOptions_ContextualRefsAndHygiene(t *testing.T) {
+	const encKey = "12345678901234567890123456789012"
+	const jwtSecret = "real-jwt-secret-1234567890123456"
+
+	var buf bytes.Buffer
+	testLogger := logger.NewWithOptions(&buf, "json", slog.LevelDebug, "erm-dokter")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/resep/{status_lanjut}/{id_kunjungan}", func(w http.ResponseWriter, r *http.Request) {
+		middleware.SetLogRef(w, middleware.HeaderLogNoResep, "202611130001")
+		response.Created(w, "Berhasil menyimpan resep obat", nil)
+	})
+	mux.HandleFunc("GET /api/v1/rawat-inap/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true}`))
+	})
+	mux.HandleFunc("GET /api/v1/radiologi/{status_lanjut}/pasien/{id_pasien}", func(w http.ResponseWriter, r *http.Request) {
+		response.Success(w, "OK", nil)
+	})
+	mux.HandleFunc("DELETE /api/v1/laboratorium/permintaan/pk/{status_lanjut}/{id_kunjungan}/{id_permintaan}", func(w http.ResponseWriter, r *http.Request) {
+		response.Success(w, "Berhasil menghapus permintaan", nil)
+	})
+
+	handler := middleware.RequestIDMiddleware(
+		middleware.LoggingMiddlewareWithOptions(middleware.LoggingOptions{
+			Logger:        testLogger,
+			EncryptionKey: encKey,
+			JWTSecret:     jwtSecret,
+		})(mux),
+	)
+
+	encKunjungan, err := crypto.Encrypt("2026/11/13/000042", encKey)
+	if err != nil {
+		t.Fatalf("encrypt no_rawat: %v", err)
+	}
+
+	t.Run("POST resep mencatat no_rawat & no_resep tanpa membocorkan scratch header atau duplikasi request_id", func(t *testing.T) {
+		buf.Reset()
+		validToken, _ := token.GenerateToken("DR001", "dr. Budi", jwtSecret, time.Hour)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/resep/ralan/"+encKunjungan, nil)
+		req.Header.Set("Authorization", "Bearer "+validToken)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d", rr.Code)
+		}
+		if rr.Header().Get(middleware.HeaderLogNoResep) != "" {
+			t.Error("expected X-Log-No-Resep scratch header to be stripped")
+		}
+
+		rawLog := buf.String()
+		if strings.Count(rawLog, `"request_id":`) != 1 {
+			t.Errorf("expected single request_id in JSON log, got: %s", rawLog)
+		}
+
+		var parsed map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+		if parsed["no_rawat"] != "2026/11/13/000042" {
+			t.Errorf("expected no_rawat 2026/11/13/000042, got %v", parsed["no_rawat"])
+		}
+		if parsed["no_resep"] != "202611130001" {
+			t.Errorf("expected no_resep 202611130001, got %v", parsed["no_resep"])
+		}
+		if parsed["user"] != "DR001" {
+			t.Errorf("expected verified user DR001, got %v", parsed["user"])
+		}
+	})
+
+	t.Run("Direct w.Write tanpa WriteHeader tetap membersihkan X-Logging-Middleware dan mengekstrak no_rawat ranap", func(t *testing.T) {
+		buf.Reset()
+		encRanapID, _ := crypto.Encrypt("2026/11/13/000099~2026-11-10~08:00:00", encKey)
+		forgedToken, _ := token.GenerateToken("DR999", "Forged", "wrong-secret-key-1234567890123456", time.Hour)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rawat-inap/"+encRanapID, nil)
+		req.Header.Set("Authorization", "Bearer "+forgedToken)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if rr.Header().Get("X-Logging-Middleware") != "" {
+			t.Error("expected X-Logging-Middleware header not to leak on direct Write")
+		}
+
+		var parsed map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+		if parsed["no_rawat"] != "2026/11/13/000099" {
+			t.Errorf("expected no_rawat 2026/11/13/000099 from composite ranap id, got %v", parsed["no_rawat"])
+		}
+		if parsed["user"] != "-" {
+			t.Errorf("expected forged JWT user to be '-', got %v", parsed["user"])
+		}
+	})
+
+	t.Run("Path id_pasien dan id_permintaan didekripsi menjadi no_rkm_medis dan no_permintaan", func(t *testing.T) {
+		buf.Reset()
+		encRM, _ := crypto.Encrypt("001234", encKey)
+		req1 := httptest.NewRequest(http.MethodGet, "/api/v1/radiologi/Semua/pasien/"+encRM, nil)
+		rr1 := httptest.NewRecorder()
+		handler.ServeHTTP(rr1, req1)
+
+		var parsed1 map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &parsed1); err != nil {
+			t.Fatalf("unmarshal log 1: %v", err)
+		}
+		if parsed1["no_rkm_medis"] != "001234" {
+			t.Errorf("expected no_rkm_medis 001234, got %v", parsed1["no_rkm_medis"])
+		}
+
+		buf.Reset()
+		encOrder, _ := crypto.Encrypt("PK202611130005", encKey)
+		req2 := httptest.NewRequest(http.MethodDelete, "/api/v1/laboratorium/permintaan/pk/ralan/"+encKunjungan+"/"+encOrder, nil)
+		rr2 := httptest.NewRecorder()
+		handler.ServeHTTP(rr2, req2)
+
+		var parsed2 map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &parsed2); err != nil {
+			t.Fatalf("unmarshal log 2: %v", err)
+		}
+		if parsed2["no_rawat"] != "2026/11/13/000042" || parsed2["no_permintaan"] != "PK202611130005" {
+			t.Errorf("expected no_rawat & no_permintaan in log, got %+v", parsed2)
+		}
+	})
 }

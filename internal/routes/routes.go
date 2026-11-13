@@ -17,6 +17,7 @@ import (
 	"erm-dokter/internal/pasien"
 	"erm-dokter/internal/pemeriksaan"
 	"erm-dokter/internal/penilaianmedis"
+	"erm-dokter/internal/pkg/logger"
 	"erm-dokter/internal/radiologi"
 	"erm-dokter/internal/rawatinap"
 	"erm-dokter/internal/rawatjalan"
@@ -50,12 +51,26 @@ type RouteConfig struct {
 	ServiceAuthMiddleware    func(http.HandlerFunc) http.HandlerFunc
 	TimeoutMiddleware        func(http.HandlerFunc) http.HandlerFunc
 	LoginRateLimitMiddleware func(http.HandlerFunc) http.HandlerFunc
+	Logger                   *logger.Logger
+	EncryptionKey            string
+	JWTSecret                string
 	AppEnv                   string
-	AllowedIPs              []string
+	AllowedIPs               []string
+	TrustedProxies           []string
 }
 
 func (c *RouteConfig) IsProduction() bool {
 	return strings.ToLower(strings.TrimSpace(c.AppEnv)) == "production"
+}
+
+func (c *RouteConfig) EffectiveClientIPProxies() []string {
+	combined := make([]string, 0, len(c.AllowedIPs)+len(c.TrustedProxies))
+	combined = append(combined, c.AllowedIPs...)
+	combined = append(combined, c.TrustedProxies...)
+	if len(combined) == 0 && !c.IsProduction() {
+		return []string{"127.0.0.0/8", "::1/128"}
+	}
+	return combined
 }
 
 func NewRouteConfig(
@@ -102,19 +117,19 @@ func NewRouteConfig(
 		ResumePasienHandler:      resumePasienHandler,
 		PasienHandler:            pasienHandler,
 		DiagnosaHandler:          diagnosaHandler,
-		AuthMiddleware:           middleware.JWTMiddleware(jwtSecret),
-		ServiceAuthMiddleware:    middleware.ServiceOrJWTMiddleware(jwtSecret, serviceAPIKey),
-		TimeoutMiddleware:        middleware.TimeoutMiddleware(30 * time.Second),
-		LoginRateLimitMiddleware: middleware.LoginRateLimitMiddleware(10, 1*time.Minute, true),
-		AppEnv:                   appEnv,
-		AllowedIPs:              allowedIPs,
+		AuthMiddleware:        middleware.JWTMiddleware(jwtSecret),
+		ServiceAuthMiddleware: middleware.ServiceOrJWTMiddleware(jwtSecret, serviceAPIKey),
+		TimeoutMiddleware:     middleware.TimeoutMiddleware(30 * time.Second),
+		JWTSecret:             jwtSecret,
+		AppEnv:                appEnv,
+		AllowedIPs:            allowedIPs,
 	}
 }
 
 func (c *RouteConfig) Setup() {
 	loginRateLimit := c.LoginRateLimitMiddleware
 	if loginRateLimit == nil {
-		loginRateLimit = middleware.LoginRateLimitMiddleware(10, 1*time.Minute, true)
+		loginRateLimit = middleware.LoginRateLimitMiddlewareWithProxies(10, 1*time.Minute, true, c.EffectiveClientIPProxies())
 	}
 
 	c.HealthHandler.RegisterRoutes(c.Mux)
@@ -142,9 +157,14 @@ func (c *RouteConfig) Setup() {
 func (c *RouteConfig) BuildHandler(corsOrigin string) http.Handler {
 	var h http.Handler = c.Mux
 	if c.IsProduction() {
-		h = middleware.IPWhitelistMiddleware(c.AllowedIPs)(h)
+		h = middleware.IPWhitelistMiddlewareWithProxies(c.AllowedIPs, c.TrustedProxies)(h)
 	}
-	h = middleware.LoggingMiddleware(h)
+	h = middleware.LoggingMiddlewareWithOptions(middleware.LoggingOptions{
+		Logger:         c.Logger,
+		EncryptionKey:  c.EncryptionKey,
+		JWTSecret:      c.JWTSecret,
+		TrustedProxies: c.EffectiveClientIPProxies(),
+	})(h)
 	h = middleware.RequestIDMiddleware(h)
 	h = middleware.CORSMiddleware(corsOrigin)(h)
 	return h
