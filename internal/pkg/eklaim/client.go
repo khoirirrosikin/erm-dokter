@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -106,21 +107,6 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 		coderNIK = c.defaultCoderNIK
 	}
 
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		deleteReq := map[string]any{
-			"metadata": map[string]string{
-				"method": "delete_claim",
-			},
-			"data": map[string]string{
-				"nomor_sep": param.NomorSEP,
-				"coder_nik": coderNIK,
-			},
-		}
-		_, _ = c.sendRequest(cleanupCtx, deleteReq)
-	}()
-
 	nomorKartu := strings.TrimSpace(param.NomorKartu)
 	if nomorKartu == "" {
 		nomorKartu = "0000000000000"
@@ -140,12 +126,26 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 		},
 	}
 
-	_, _ = c.sendRequest(ctx, newClaimReq)
-
-	caraPulang := param.CaraPulang
-	if caraPulang == "" {
-		caraPulang = "1"
+	if _, err := c.sendRequest(ctx, newClaimReq); err != nil {
+		return nil, fmt.Errorf("gagal membuat klaim simulasi E-Klaim: %w", err)
 	}
+
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		deleteReq := map[string]any{
+			"metadata": map[string]string{
+				"method": "delete_claim",
+			},
+			"data": map[string]string{
+				"nomor_sep": param.NomorSEP,
+				"coder_nik": coderNIK,
+			},
+		}
+		_, _ = c.sendRequest(cleanupCtx, deleteReq)
+	}()
+
+	dischargeStatus := parseDischargeStatus(param.CaraPulang)
 
 	jenisRawat := param.JenisRawat
 	if jenisRawat == "" {
@@ -154,11 +154,7 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 
 	kelasRawat := param.KelasRawat
 	if kelasRawat == "" {
-		if jenisRawat == "1" {
-			kelasRawat = "3"
-		} else {
-			kelasRawat = "3"
-		}
+		kelasRawat = "3"
 	}
 
 	tglMasuk := param.TanggalMasuk
@@ -190,7 +186,7 @@ func (c *client) SimulasiGrouper(ctx context.Context, param ParameterSimulasi) (
 			"upgrade_class_ind": 0,
 			"add_payment_pct":   0,
 			"birth_weight":      0,
-			"discharge_status":  1,
+			"discharge_status":  dischargeStatus,
 			"tarif_rs": map[string]any{
 				"prosedur_non_bedah": 0,
 				"prosedur_bedah":     0,
@@ -477,24 +473,78 @@ func (c *client) parseGrouperResult(resp *wsResponse, jenisRawat string) (*Hasil
 	}, nil
 }
 
+func parseDischargeStatus(caraPulang string) int {
+	trimmed := strings.TrimSpace(caraPulang)
+	if trimmed == "" {
+		return 1
+	}
+	if code, err := strconv.Atoi(trimmed); err == nil && code >= 1 && code <= 5 {
+		return code
+	}
+	return 1
+}
+
 func parseTariffValue(val any) int64 {
 	if val == nil {
 		return 0
 	}
 	switch v := val.(type) {
 	case float64:
-		return int64(v)
+		return int64(math.Round(v))
+	case float32:
+		return int64(math.Round(float64(v)))
 	case int:
+		return int64(v)
+	case int32:
 		return int64(v)
 	case int64:
 		return v
+	case json.Number:
+		return parseTariffString(v.String())
 	case string:
-		clean := strings.TrimSpace(v)
-		clean = strings.ReplaceAll(clean, ",", "")
-		clean = strings.ReplaceAll(clean, ".", "")
-		if parsed, err := strconv.ParseInt(clean, 10, 64); err == nil {
-			return parsed
+		return parseTariffString(v)
+	}
+	return 0
+}
+
+func parseTariffString(s string) int64 {
+	clean := strings.TrimSpace(s)
+	if clean == "" {
+		return 0
+	}
+
+	lastDot := strings.LastIndex(clean, ".")
+	lastComma := strings.LastIndex(clean, ",")
+
+	switch {
+	case lastDot != -1 && lastComma != -1:
+		if lastComma > lastDot {
+			clean = strings.ReplaceAll(clean, ".", "")
+			clean = strings.ReplaceAll(clean, ",", ".")
+		} else {
+			clean = strings.ReplaceAll(clean, ",", "")
 		}
+	case lastComma != -1:
+		if strings.Count(clean, ",") == 1 && len(clean)-lastComma-1 <= 2 {
+			clean = strings.ReplaceAll(clean, ",", ".")
+		} else {
+			clean = strings.ReplaceAll(clean, ",", "")
+		}
+	case lastDot != -1:
+		if strings.Count(clean, ".") > 1 || len(clean)-lastDot-1 > 2 {
+			clean = strings.ReplaceAll(clean, ".", "")
+		}
+	}
+
+	if strings.Contains(clean, ".") {
+		if f, err := strconv.ParseFloat(clean, 64); err == nil {
+			return int64(math.Round(f))
+		}
+		return 0
+	}
+
+	if parsed, err := strconv.ParseInt(clean, 10, 64); err == nil {
+		return parsed
 	}
 	return 0
 }
