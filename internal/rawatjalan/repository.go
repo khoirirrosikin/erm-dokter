@@ -362,29 +362,6 @@ func (r *repository) countRujukan(ctx context.Context, kodeDokter string, filter
 	return count, nil
 }
 
-func buildBaseQuery(kodeDokter string, filter FilterAntreanDokter) (string, []any) {
-	switch filter.JenisAntrean {
-	case JenisAntreanTidakRujukan:
-		where, args := buildBranchConditions("", "r.kd_dokter", kodeDokter, filter)
-		return selectKunjunganBukanRujukan + where, args
-
-	case JenisAntreanRujukan:
-		where, args := buildBranchConditions("", "rip.kd_dokter", kodeDokter, filter)
-		return selectKunjunganRujukan + where, args
-
-	default:
-		where1, args1 := buildBranchConditions("", "r.kd_dokter", kodeDokter, filter)
-		where2, args2 := buildBranchConditions("", "rip.kd_dokter", kodeDokter, filter)
-
-		query1 := selectKunjunganBukanRujukan + where1
-		query2 := selectKunjunganRujukan + where2
-
-		combinedQuery := fmt.Sprintf("%s UNION ALL %s", query1, query2)
-		combinedArgs := append(args1, args2...)
-		return combinedQuery, combinedArgs
-	}
-}
-
 func (r *repository) scanAntreanRows(ctx context.Context, query string, args []any) ([]KunjunganRawatJalan, error) {
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -649,16 +626,29 @@ func (r *repository) DaftarAntreanDokter(ctx context.Context, kodeDokter string,
 }
 
 func (r *repository) DetailKunjungan(ctx context.Context, noRawat string, kodeDokter string) (*KunjunganRawatJalan, error) {
-	baseQuery, baseArgs := buildBaseQuery(kodeDokter, FilterAntreanDokter{})
+	cleanDokter := strings.TrimSpace(kodeDokter)
+
+	where1 := " WHERE r.stts <> 'Batal' AND r.no_rawat = ?"
+	where2 := " WHERE r.stts <> 'Batal' AND rip.no_rawat = ?"
+	args := make([]any, 0, 4)
+	args = append(args, noRawat)
+	if cleanDokter != "" {
+		where1 += " AND r.kd_dokter = ?"
+		args = append(args, cleanDokter)
+	}
+	args = append(args, noRawat)
+	if cleanDokter != "" {
+		where2 += " AND rip.kd_dokter = ?"
+		args = append(args, cleanDokter)
+	}
 
 	query := fmt.Sprintf(`
-		SELECT * 
-		FROM (%s) AS t 
-		WHERE t.status_pemeriksaan <> 'Batal' AND t.no_rawat = ? 
+		%s%s
+		UNION ALL
+		%s%s
 		LIMIT 1
-	`, baseQuery)
+	`, selectKunjunganBukanRujukan, where1, selectKunjunganRujukan, where2)
 
-	args := append(baseArgs, noRawat)
 	row := r.db.QueryRowContext(ctx, query, args...)
 	kunjungan, err := scanKunjungan(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -671,17 +661,17 @@ func (r *repository) DetailKunjungan(ctx context.Context, noRawat string, kodeDo
 }
 
 func (r *repository) RiwayatKunjunganPasien(ctx context.Context, noRekamMedis string) ([]KunjunganRawatJalan, error) {
-	baseQuery, baseArgs := buildBaseQuery("", FilterAntreanDokter{})
-
 	query := fmt.Sprintf(`
 		SELECT * 
-		FROM (%s) AS t 
-		WHERE t.status_pemeriksaan <> 'Batal' AND t.no_rekam_medis = ? 
+		FROM (
+			%s WHERE r.stts <> 'Batal' AND r.no_rkm_medis = ?
+			UNION ALL
+			%s WHERE r.stts <> 'Batal' AND r.no_rkm_medis = ?
+		) AS t 
 		ORDER BY t.tanggal_registrasi DESC, t.jam_registrasi DESC
-	`, baseQuery)
+	`, selectKunjunganBukanRujukan, selectKunjunganRujukan)
 
-	args := append(baseArgs, noRekamMedis)
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, query, noRekamMedis, noRekamMedis)
 	if err != nil {
 		return nil, fmt.Errorf("gagal query riwayat kunjungan pasien: %w", err)
 	}

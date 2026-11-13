@@ -398,3 +398,92 @@ func TestGetInfoRegistrasi_ScansExtendedVisitMetadata(t *testing.T) {
 		t.Fatalf("unexpected InfoRegistrasiPasien: %+v", info)
 	}
 }
+
+func TestDetailKunjunganAndRiwayat_PushesPredicatesIntoUnionBranches(t *testing.T) {
+	t.Run("DetailKunjungan in service mode pushes r.no_rawat and rip.no_rawat into each UNION ALL branch", func(t *testing.T) {
+		db, drv := openStubRawatJalanDB(t, func(_ string, _ []driver.NamedValue) (driver.Rows, error) {
+			return &stubRows{
+				cols: kunjunganColumns,
+				data: [][]driver.Value{
+					sampleKunjunganRow("2026/04/22/000010", "2026-04-22", "08:00:00", "Siti", "BPJS", "Bukan Rujukan", "", ""),
+				},
+			}, nil
+		})
+
+		repo := NewRepository(db)
+		got, err := repo.DetailKunjungan(context.Background(), "2026/04/22/000010", "")
+		if err != nil || got == nil || got.NoRawat != "2026/04/22/000010" {
+			t.Fatalf("unexpected DetailKunjungan result: got=%+v err=%v", got, err)
+		}
+
+		calls := drv.getCalls()
+		if len(calls) != 1 {
+			t.Fatalf("expected 1 query, got %d", len(calls))
+		}
+		q := calls[0].query
+		parts := strings.Split(q, "UNION ALL")
+		if len(parts) != 2 {
+			t.Fatalf("expected 2 UNION ALL branches, got:\n%s", q)
+		}
+		if !strings.Contains(parts[0], "WHERE r.stts <> 'Batal' AND r.no_rawat = ?") {
+			t.Errorf("branch 1 missing pushed no_rawat predicate:\n%s", parts[0])
+		}
+		if !strings.Contains(parts[1], "WHERE r.stts <> 'Batal' AND rip.no_rawat = ?") {
+			t.Errorf("branch 2 missing pushed rip.no_rawat predicate:\n%s", parts[1])
+		}
+		if len(calls[0].args) != 2 {
+			t.Errorf("expected 2 args in service mode, got %d", len(calls[0].args))
+		}
+	})
+
+	t.Run("DetailKunjungan in doctor mode pushes both no_rawat and kd_dokter into each UNION ALL branch", func(t *testing.T) {
+		db, drv := openStubRawatJalanDB(t, func(_ string, _ []driver.NamedValue) (driver.Rows, error) {
+			return &stubRows{cols: kunjunganColumns}, nil
+		})
+
+		repo := NewRepository(db)
+		got, err := repo.DetailKunjungan(context.Background(), "2026/04/22/000010", "DR001")
+		if err != nil || got != nil {
+			t.Fatalf("expected nil,nil on empty rows, got=%+v err=%v", got, err)
+		}
+
+		calls := drv.getCalls()
+		parts := strings.Split(calls[0].query, "UNION ALL")
+		if !strings.Contains(parts[0], "AND r.kd_dokter = ?") || !strings.Contains(parts[1], "AND rip.kd_dokter = ?") {
+			t.Errorf("expected doctor predicates in both branches:\n%s", calls[0].query)
+		}
+		if len(calls[0].args) != 4 {
+			t.Errorf("expected 4 args in doctor mode, got %d", len(calls[0].args))
+		}
+	})
+
+	t.Run("RiwayatKunjunganPasien pushes r.no_rkm_medis into both UNION ALL branches", func(t *testing.T) {
+		db, drv := openStubRawatJalanDB(t, func(_ string, _ []driver.NamedValue) (driver.Rows, error) {
+			return &stubRows{
+				cols: kunjunganColumns,
+				data: [][]driver.Value{
+					sampleKunjunganRow("2026/04/22/000010", "2026-04-22", "08:00:00", "Siti", "BPJS", "Bukan Rujukan", "", ""),
+				},
+			}, nil
+		})
+
+		repo := NewRepository(db)
+		list, err := repo.RiwayatKunjunganPasien(context.Background(), "000123")
+		if err != nil || len(list) != 1 {
+			t.Fatalf("unexpected RiwayatKunjunganPasien result: len=%d err=%v", len(list), err)
+		}
+
+		calls := drv.getCalls()
+		parts := strings.Split(calls[0].query, "UNION ALL")
+		if len(parts) != 2 {
+			t.Fatalf("expected 2 UNION ALL branches, got:\n%s", calls[0].query)
+		}
+		if !strings.Contains(parts[0], "WHERE r.stts <> 'Batal' AND r.no_rkm_medis = ?") ||
+			!strings.Contains(parts[1], "WHERE r.stts <> 'Batal' AND r.no_rkm_medis = ?") {
+			t.Errorf("expected pushed r.no_rkm_medis predicate in both UNION ALL branches:\n%s", calls[0].query)
+		}
+		if len(calls[0].args) != 2 || calls[0].args[0].Value != "000123" || calls[0].args[1].Value != "000123" {
+			t.Errorf("unexpected args: %+v", calls[0].args)
+		}
+	})
+}

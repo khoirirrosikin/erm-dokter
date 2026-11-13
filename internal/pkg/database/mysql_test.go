@@ -27,6 +27,9 @@ func TestBuildDSN(t *testing.T) {
 		if !cfg.ClientFoundRows {
 			t.Error("expected ClientFoundRows to be true")
 		}
+		if !cfg.InterpolateParams {
+			t.Error("expected InterpolateParams to be true")
+		}
 		if cfg.ParseTime {
 			t.Error("expected ParseTime to be false")
 		}

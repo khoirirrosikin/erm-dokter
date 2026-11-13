@@ -56,6 +56,10 @@ func (m *mockRawatInapService) GetKelasRawat(ctx context.Context, noRawat string
 	return "", nil
 }
 
+func (m *mockRawatInapService) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	return "", "", nil
+}
+
 func authMwForTest(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), middleware.UserClaimKey, &token.Claims{KodeDokter: "DR01"})

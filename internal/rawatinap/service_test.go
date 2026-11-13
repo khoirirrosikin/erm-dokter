@@ -10,9 +10,17 @@ import (
 )
 
 type mockRepository struct {
-	cekStatusKamarInapFn    func(ctx context.Context, noRawat string) (bool, bool, error)
-	daftarPasienRawatInapFn func(ctx context.Context, kodeDokterLogin string, filter rawatinap.FilterPasienRawatInap) ([]rawatinap.KunjunganRawatInap, int, error)
-	detailPasienRawatInapFn func(ctx context.Context, noRawat string, tglMasuk string, jamMasuk string) (*rawatinap.KunjunganRawatInap, error)
+	cekStatusKamarInapFn     func(ctx context.Context, noRawat string) (bool, bool, error)
+	getWaktuKeluarTerakhirFn func(ctx context.Context, noRawat string) (string, string, error)
+	daftarPasienRawatInapFn  func(ctx context.Context, kodeDokterLogin string, filter rawatinap.FilterPasienRawatInap) ([]rawatinap.KunjunganRawatInap, int, error)
+	detailPasienRawatInapFn  func(ctx context.Context, noRawat string, tglMasuk string, jamMasuk string) (*rawatinap.KunjunganRawatInap, error)
+}
+
+func (m *mockRepository) GetWaktuKeluarTerakhir(ctx context.Context, noRawat string) (string, string, error) {
+	if m.getWaktuKeluarTerakhirFn != nil {
+		return m.getWaktuKeluarTerakhirFn(ctx, noRawat)
+	}
+	return "", "", nil
 }
 
 func (m *mockRepository) CekStatusKamarInap(ctx context.Context, noRawat string) (bool, bool, error) {
@@ -258,6 +266,43 @@ func TestService_DetailPasienRawatInap(t *testing.T) {
 		_, err := svc.DetailPasienRawatInap(context.Background(), "2026/09/01/000001", "2026-09-01", "10:00:00")
 		if !errors.Is(err, repoErr) {
 			t.Fatalf("expected %v, got %v", repoErr, err)
+		}
+	})
+}
+
+func TestService_GetWaktuKeluarTerakhir(t *testing.T) {
+	log := logger.New()
+
+	t.Run("Empty no_rawat returns empty without calling repo", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			getWaktuKeluarTerakhirFn: func(ctx context.Context, noRawat string) (string, string, error) {
+				t.Fatal("repo should not be called")
+				return "", "", nil
+			},
+		}
+		svc := rawatinap.NewService(mockRepo, log)
+		tgl, jam, err := svc.GetWaktuKeluarTerakhir(context.Background(), "   ")
+		if err != nil || tgl != "" || jam != "" {
+			t.Fatalf("expected empty result, got (%q, %q, %v)", tgl, jam, err)
+		}
+	})
+
+	t.Run("Returns trimmed discharge time from repo", func(t *testing.T) {
+		mockRepo := &mockRepository{
+			getWaktuKeluarTerakhirFn: func(ctx context.Context, noRawat string) (string, string, error) {
+				if noRawat != "2026/11/12/000001" {
+					t.Fatalf("unexpected noRawat: %s", noRawat)
+				}
+				return "2026-11-12", "15:00:00", nil
+			},
+		}
+		svc := rawatinap.NewService(mockRepo, log)
+		tgl, jam, err := svc.GetWaktuKeluarTerakhir(context.Background(), " 2026/11/12/000001 ")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tgl != "2026-11-12" || jam != "15:00:00" {
+			t.Fatalf("expected (2026-11-12, 15:00:00), got (%q, %q)", tgl, jam)
 		}
 	})
 }
